@@ -7,6 +7,8 @@ import logging
 import timm
 from timm.models.registry import register_model
 from timm.models.vision_transformer import _cfg, default_cfgs,_create_vision_transformer
+import warnings
+warnings.filterwarnings("ignore")
 
 logger = logging.getLogger()
 

@@ -9,28 +9,32 @@ def base_parser():
     parser.add_argument(
         "--method",
         type=str,
-        default="er",
+        default="adapter-clip",
         help="Select CIL method",
     )
     parser.add_argument(
         "--dataset",
         type=str,
-        default="cifar10",
+        default="cifar100",
         help="[mnist, cifar10, cifar100, imagenet]",
     )
     parser.add_argument("--n_tasks",
+                        type=int,
+                        default=10,
+                        help="The number of tasks")
+    parser.add_argument("--epochNum",
                         type=int,
                         default=5,
                         help="The number of tasks")
     parser.add_argument(
         "--n",
         type=int,
-        default=50,
+        default=100,
         help="The percentage of disjoint split. Disjoint=100, Blurry=0")
     parser.add_argument(
         "--m",
         type=int,
-        default=10,
+        default=0,
         help=
         "The percentage of blurry samples in blurry split. Uniform split=100, Disjoint=0"
     )
@@ -38,10 +42,10 @@ def base_parser():
                         action='store_true',
                         default=False,
                         help="if True, N and M are randomly mixed over tasks.")
-    parser.add_argument("--rnd_seed", type=int, help="Random seed number.")
+    parser.add_argument("--rnd_seed", type=int, default=0,help="Random seed number.")
     parser.add_argument("--memory_size",
                         type=int,
-                        default=500,
+                        default=0,
                         help="Episodic memory size")
     # Dataset
     parser.add_argument(
@@ -53,26 +57,27 @@ def base_parser():
     # Model
     parser.add_argument("--model_name",
                         type=str,
-                        default="resnet18",
+                        default="'/home/qc/pretrained_model/ViT-L-14.pt'",#名字和路径都可以
+                        # default="ViT-L-14",
                         help="Model name")
 
     # Train
     parser.add_argument("--opt_name",
                         type=str,
-                        default="sgd",
+                        default="adamw",
                         help="Optimizer name")
     parser.add_argument("--sched_name",
                         type=str,
                         default="default",
                         help="Scheduler name")
-    parser.add_argument("--batchsize", type=int, default=16, help="batch size")
+    parser.add_argument("--batchsize", type=int, default=128, help="batch size")
 
     parser.add_argument("--n_worker",
                         type=int,
                         default=0,
                         help="The number of workers")
 
-    parser.add_argument("--lr", type=float, default=0.05, help="learning rate")
+    parser.add_argument("--lr", type=float, default=5e-4, help="learning rate")
     parser.add_argument(
         "--init_model",
         action="store_true",
@@ -90,6 +95,7 @@ def base_parser():
 
     parser.add_argument("--use_amp",
                         action="store_true",
+                        default=True,
                         help="Use automatic mixed precision.")
 
     parser.add_argument("--visible_classes",
@@ -108,6 +114,7 @@ def base_parser():
     parser.add_argument(
         "--gpu_transform",
         action="store_true",
+        default=True,
         help="perform data transform on gpu (for faster AutoAug).")
 
     # Regularization
@@ -118,7 +125,7 @@ def base_parser():
         help="weighting for the regularization loss term",
     )
 
-    parser.add_argument("--data_dir", type=str, help="location of the dataset")
+    parser.add_argument("--data_dir", default='/home/qc/dataset',type=str, help="location of the dataset")
 
     # Debug
     parser.add_argument("--debug",
@@ -137,6 +144,7 @@ def base_parser():
 
     parser.add_argument("--temp_batchsize",
                         type=int,
+                        default=0,
                         help="temporary batch size, for true online")
     parser.add_argument("--online_iter",
                         type=float,
@@ -178,7 +186,7 @@ def base_parser():
     parser.add_argument(
         "--memory_epoch",
         type=int,
-        default=256,
+        default=0,
         help="number of training epochs after task for Rainbow Memory")
 
     # BiC
@@ -229,6 +237,10 @@ def base_parser():
                         type=float,
                         default=2.,
                         help='# candidates to use for STR hyperparameter')
+    parser.add_argument('--seed',
+                        type=int,
+                        default=1.,
+                        help='# candidates to use for STR hyperparameter')
     parser.add_argument('--margin',
                         type=float,
                         default=0.5,
@@ -258,4 +270,5 @@ def base_parser():
                         help='Which dataset to use for zero-shot evaluation.')
 
     args = parser.parse_args()
+
     return args

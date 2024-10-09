@@ -52,8 +52,8 @@ class OnlineSampler(Sampler):
 
         if not self.varing_NM:
             # Divide classes into N% of disjoint and (100 - N)% of blurry
-            class_order = torch.randperm(len(self.classes),
-                                         generator=self.generator)
+            # class_order = torch.randperm(len(self.classes),generator=self.generator)#原来是随机的，改成按顺序
+            class_order = torch.arange(len(self.classes))
             self.disjoint_classes = class_order[:self.disjoint_num]
             self.disjoint_classes = self.disjoint_classes.reshape(
                 num_tasks, -1).tolist()

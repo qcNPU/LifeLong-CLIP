@@ -20,6 +20,7 @@ def get_model(method, model_name, **kwargs):
         return ContinualCLIP(model_name=model_name,
                              device=kwargs['device']), 224
     elif method == "adapter-clip":
+        # model_name = '/home/qc/pretrained_model/ViT-L-14.pt'
         return AdapterCLIP(model_name=model_name,
                            device=kwargs['device'],
                            peft_method='adapter',

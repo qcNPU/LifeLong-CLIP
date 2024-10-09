@@ -1,0 +1,43 @@
+2024-10-01 01:41:10,131 | {'method': 'adapter-clip', 'dataset': 'cifar100', 'n_tasks': 10, 'n': 100, 'm': 0, 'rnd_NM': False, 'rnd_seed': 0, 'memory_size': 0, 'log_path': 'results', 'model_name': 'ViT-L-14', 'opt_name': 'adamw', 'sched_name': 'default', 'batchsize': 64, 'n_worker': 0, 'lr': 0.0005, 'init_model': False, 'init_opt': False, 'topk': 1, 'use_amp': True, 'visible_classes': 'batch', 'transforms': ['cutmix', 'autoaug'], 'gpu_transform': True, 'reg_coef': 100, 'data_dir': '/home/qc/dataset', 'debug': False, 'note': 'adapter-clip_batch_both_1.0', 'eval_period': 100, 'temp_batchsize': None, 'online_iter': 1, 'num_gpus': 1, 'workers_per_gpu': 1, 'imp_update_period': 1, 'lr_step': 0.95, 'lr_length': 10, 'lr_period': 10, 'memory_epoch': 256, 'distilling': True, 'agem_batch': 240, 'mir_cands': 50, 'use_mask': False, 'use_contrastiv': False, 'use_last_layer': False, 'use_afs': False, 'use_gsf': False, 'selection_size': 1, 'alpha': 0.5, 'gamma': 2.0, 'seed': 1.0, 'margin': 0.5, 'profile': False, 'peft_encoder': 'both', 'zero_shot_evaluation': False, 'zero_shot_dataset': ['food101', 'caltech101', 'eurosat', 'flowers102', 'oxford_pet']}
+2024-10-01 01:41:10,132 | You have chosen to seed training. This will turn on the CUDNN deterministic setting, which can slow down your training considerably! You may see unexpected behavior when restarting from checkpoints.
+2024-10-01 01:41:10,132 | Select a CIL method (adapter-clip)
+2024-10-01 01:41:10,132 | Building model (ViT-L-14)
+Files already downloaded and verified
+Files already downloaded and verified
+2024-10-01 01:41:20,464 | Building model...
+2024-10-01 01:41:20,477 | Total Parameters :	431977985
+2024-10-01 01:41:20,479 | Learnable Parameters :	431977985
+2024-10-01 01:41:20,480 | disjoint classes: [[44, 19, 93, 90, 71, 69, 37, 95, 53, 91], [81, 42, 80, 85, 74, 56, 76, 63, 82, 40], [26, 92, 57, 10, 16, 66, 89, 41, 97, 8], [31, 24, 35, 30, 65, 7, 98, 23, 20, 29], [78, 61, 94, 15, 4, 52, 59, 5, 54, 46], [3, 28, 2, 70, 6, 60, 49, 68, 55, 72], [79, 77, 45, 1, 32, 34, 11, 0, 22, 12], [87, 50, 25, 47, 36, 96, 9, 83, 62, 84], [18, 17, 75, 67, 13, 48, 39, 21, 64, 88], [38, 27, 14, 73, 33, 58, 86, 43, 99, 51]]
+2024-10-01 01:41:20,480 | blurry classes: [[], [], [], [], [], [], [], [], [], []]
+2024-10-01 01:41:20,548 | blurry indices: 0
+2024-10-01 01:41:20,548 | task 0: disjoint 5000, blurry 0
+2024-10-01 01:41:20,550 | task 1: disjoint 5000, blurry 0
+2024-10-01 01:41:20,551 | task 2: disjoint 5000, blurry 0
+2024-10-01 01:41:20,552 | task 3: disjoint 5000, blurry 0
+2024-10-01 01:41:20,553 | task 4: disjoint 5000, blurry 0
+2024-10-01 01:41:20,554 | task 5: disjoint 5000, blurry 0
+2024-10-01 01:41:20,555 | task 6: disjoint 5000, blurry 0
+2024-10-01 01:41:20,556 | task 7: disjoint 5000, blurry 0
+2024-10-01 01:41:20,557 | task 8: disjoint 5000, blurry 0
+2024-10-01 01:41:20,558 | task 9: disjoint 5000, blurry 0
+2024-10-01 01:41:20,560 | Incrementally training 10 tasks
+2024-10-01 01:41:20,560 | ##################################################
+2024-10-01 01:41:20,560 | # Task 0 Session
+2024-10-01 01:41:20,560 | ##################################################
+2024-10-01 01:41:20,560 | [2-1] Prepare a datalist for the current task
+2024-10-01 01:41:20,563 | Total parameters:	431977985
+2024-10-01 01:41:20,564 | Trainable parameters:	4361472
+Traceback (most recent call last):
+  File "/home/qc/project/LifeLong-CLIP-main/main.py", line 74, in <module>
+    main()
+  File "/home/qc/project/LifeLong-CLIP-main/main.py", line 70, in main
+    trainer.run()
+  File "/home/qc/project/LifeLong-CLIP-main/methods/_trainer.py", line 225, in run
+    self.main_worker(0)
+  File "/home/qc/project/LifeLong-CLIP-main/methods/_trainer.py", line 333, in main_worker
+    loss, acc = self.online_step(images, labels, idx)
+  File "/home/qc/project/LifeLong-CLIP-main/methods/adapter_clip.py", line 35, in online_step
+    self.model.module.update_class_names(self.exposed_classes_names)#将新出现的classname加入到self.current_class_names变量中
+  File "/home/qc/anaconda3/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1695, in __getattr__
+    raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+AttributeError: 'AdapterCLIP' object has no attribute 'module'. Did you mean: 'modules'?

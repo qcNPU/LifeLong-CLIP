@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import logging
-
+import clip
 from .clip import clip_loader
 from .clip.tokenizer import SimpleTokenizer as _Tokenizer
 

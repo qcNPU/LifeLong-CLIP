@@ -21,9 +21,10 @@ class Memory:
         self.others_loss_decrease = torch.empty(0)
 
     def add_new_class(self, cls_list: Iterable[int]) -> None:
-        self.cls_list = torch.tensor(cls_list)
-        self.cls_count = torch.cat([self.cls_count, torch.zeros(len(self.cls_list) - len(self.cls_count))])
-        self.cls_train_cnt = torch.cat([self.cls_train_cnt, torch.zeros(len(self.cls_list) - len(self.cls_train_cnt))])
+        pass
+        # self.cls_list = torch.tensor(cls_list)
+        # self.cls_count = torch.cat([self.cls_count, torch.zeros(len(self.cls_list) - len(self.cls_count))])
+        # self.cls_train_cnt = torch.cat([self.cls_train_cnt, torch.zeros(len(self.cls_list) - len(self.cls_train_cnt))])
 
     def replace_data(self, data: Tuple[Tensor, Tensor], idx: int=None) -> None:
         index, label = data

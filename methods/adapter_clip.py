@@ -32,26 +32,29 @@ class AdapterCLIP(_Trainer):
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
-        self.model.update_class_names(self.exposed_classes_names)
+        # self.model.module.update_class_names(self.exposed_classes_names)#将新出现的classname加入到self.current_class_names变量中
+        self.model.module.update_class_names(self.exposed_classes_names)#将新出现的classname加入到self.current_class_names变量中
 
-        self.memory_sampler = MemoryBatchSampler(
-            self.memory, self.memory_batchsize,
-            self.temp_batchsize * self.online_iter * self.world_size)
-        self.memory_dataloader = DataLoader(self.train_dataset,
-                                            batch_size=self.memory_batchsize,
-                                            sampler=self.memory_sampler,
-                                            num_workers=4)
-        self.memory_provider = iter(self.memory_dataloader)
+        # self.memory_sampler = MemoryBatchSampler(
+        #     self.memory, self.memory_batchsize,
+        #     self.temp_batchsize * self.online_iter * self.world_size)
+        # self.memory_dataloader = DataLoader(self.train_dataset,
+        #                                     batch_size=self.memory_batchsize,
+        #                                     sampler=self.memory_sampler,
+        #                                     num_workers=4)
+        # self.memory_provider = iter(self.memory_dataloader)
         # train with augmented batches
         _loss, _acc, _iter = 0.0, 0.0, 0
+        # print(f'self.exposed_classes：{self.exposed_classes}，self.batch_exposed_classes：{self.batch_exposed_classes}，'
+        #       f'self.current_class_names：{self.model.module.current_class_names}')
         for _ in range(int(self.online_iter)):
             loss, acc = self.online_train([images.clone(), labels.clone()])
             _loss += loss
             _acc += acc
             _iter += 1
-        self.update_memory(idx, labels)
-        del (images, labels)
-        gc.collect()
+        # self.update_memory(idx, labels)
+        # del (images, labels)
+        # gc.collect()
         # torch.cuda.empty_cache()
         return _loss / _iter, _acc / _iter
 
@@ -88,8 +91,9 @@ class AdapterCLIP(_Trainer):
         y = y.to(self.device)
 
         x = self.train_transform(x)
-
-        text_tokens = self.model.labels_tokenize(train_class_name_list)
+        # print(f'train_class_list：{train_class_list}')
+        # text_tokens = self.model.module.labels_tokenize(train_class_name_list)
+        text_tokens = self.model.module.labels_tokenize(train_class_name_list)
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
@@ -131,7 +135,7 @@ class AdapterCLIP(_Trainer):
     def online_after_task(self, task_id):
         pass
 
-    def online_evaluate(self, test_loader):
+    def online_evaluate(self, test_loader, samples_cnt):
         total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
         correct_l = torch.zeros(self.n_classes)
         num_data_l = torch.zeros(self.n_classes)
@@ -164,12 +168,33 @@ class AdapterCLIP(_Trainer):
         avg_acc = total_correct / total_num_data
         avg_loss = total_loss / len(test_loader)
         cls_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
+        num_classes_per_task = 10
+        num_tasks = len(cls_acc) // num_classes_per_task
+
+        task_acc = []
+        for i in range(num_tasks):
+            # 当前任务的类别索引
+            start_idx = i * num_classes_per_task
+            end_idx = (i + 1) * num_classes_per_task
+
+            # 当前任务的正确数量和样本总数
+            correct_per_task = correct_l[start_idx:end_idx].sum()
+            num_data_per_task = num_data_l[start_idx:end_idx].sum()
+
+            # 计算任务的正确率
+            task_acc.append(correct_per_task / (num_data_per_task + 1e-5))
+
+        # 打印每个任务的正确率
+        logging.info(f'task_acc:{task_acc}')
+        print(f'task_acc:{task_acc}')
+
         cm = confusion_matrix(label, pred_list)
 
         eval_dict = {
             "avg_loss": avg_loss,
             "avg_acc": avg_acc,
             "cls_acc": cls_acc,
+            "task_acc": task_acc,
             "confusion_matrix": cm.tolist()
         }
         return eval_dict
@@ -280,7 +305,7 @@ class AdapterCLIP(_Trainer):
 
     def add_new_class(self, class_name):
         _old_num = len(self.exposed_classes)
-        super().add_new_class(class_name)
+        super().add_new_class(class_name)#将这批数据的新class加入到exposed_class变量中
 
         self.batch_exposed_classes = []
         self.batch_exposed_classes_names = []
@@ -288,11 +313,11 @@ class AdapterCLIP(_Trainer):
             self.batch_exposed_classes = self.exposed_classes
             self.batch_exposed_classes_names = self.exposed_classes_names
         else:
-            self.add_new_batch_class(class_name)
+            self.add_new_batch_class(class_name)#再将这批数据的新class从exposed_class变量中取出，加入到batch_exposed_classes变量中
 
-    def report_training(self, sample_num, train_loss, train_acc):
+    def report_training(self, epoch,sample_num, train_loss, train_acc):
         print(
-            f"Train | Sample # {sample_num} | train_loss {train_loss:.4f} | train_acc {train_acc:.4f} | "
+            f"Train | epoch:{epoch}, Sample # {sample_num} | train_loss {train_loss:.4f} | train_acc {train_acc:.4f} | "
             f"lr {self.optimizer.param_groups[0]['lr']:.6f} | "
             f"Num_Classes {len(self.exposed_classes)} | "
             f"Num_Batch_Classes {len(self.batch_exposed_classes)} | "

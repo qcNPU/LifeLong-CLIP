@@ -46,6 +46,7 @@ class _Trainer():
         self.rnd_NM = kwargs.get("rnd_NM")
 
         self.n_tasks = kwargs.get("n_tasks")
+        self.epochNum = kwargs.get("epochNum")
         self.dataset_name = kwargs.get("dataset")
         self.rnd_seed = kwargs.get("rnd_seed")
 
@@ -96,6 +97,7 @@ class _Trainer():
         self.train_count = 0
 
         self.ngpus_per_nodes = torch.cuda.device_count()
+        # self.ngpus_per_nodes = 3
         self.world_size = 1
         if "WORLD_SIZE" in os.environ and os.environ["WORLD_SIZE"] != '':
             self.world_size = int(
@@ -105,12 +107,13 @@ class _Trainer():
         self.distributed = self.world_size > 1
 
         if self.distributed:
-            self.batchsize = self.batchsize // self.world_size
+            self.batchsize = self.batchsize // self.world_size#64,4,16
         if self.temp_batchsize is None:
             self.temp_batchsize = self.batchsize // 2
         if self.temp_batchsize > self.batchsize:
             self.temp_batchsize = self.batchsize
-        self.memory_batchsize = self.batchsize - self.temp_batchsize
+        # self.memory_batchsize = self.batchsize - self.temp_batchsize
+        self.memory_batchsize = 0
 
         if 'debug' not in self.note:
             self.log_dir = os.path.join(
@@ -310,7 +313,7 @@ class _Trainer():
         logging.info(f"Incrementally training {self.n_tasks} tasks")
         task_records = defaultdict(list)
         eval_results = defaultdict(list)
-        samples_cnt = 0
+
 
         num_eval = self.eval_period
 
@@ -325,51 +328,58 @@ class _Trainer():
 
             self.train_sampler.set_task(task_id)
             self.online_before_task(task_id)
+            data_len = len(self.train_dataloader)
+            logging.info(f'{data_len}')
+            for epoch in range(self.epochNum):
+                total_loss = 0.0
+                total_acc = 0.0
+                samples_cnt = 0
+                for i, (images, labels, idx) in enumerate(self.train_dataloader):
+                    if self.debug and (i + 1) * self.temp_batchsize >= 500:
+                        break
+                    samples_cnt += images.size(0) * self.world_size
+                    loss, acc = self.online_step(images, labels, idx)
+                    total_loss += loss
+                    total_acc += acc
 
-            for i, (images, labels, idx) in enumerate(self.train_dataloader):
-                if self.debug and (i + 1) * self.temp_batchsize >= 500:
-                    break
-                samples_cnt += images.size(0) * self.world_size
-                loss, acc = self.online_step(images, labels, idx)
+                self.report_training(epoch,samples_cnt, total_loss/data_len, total_acc*100/data_len)
 
-                self.report_training(samples_cnt, loss, acc)
-
-                if samples_cnt > num_eval:
-                    with torch.no_grad():
-                        test_sampler = OnlineTestSampler(
-                            self.test_dataset, self.exposed_classes)
-                        test_dataloader = DataLoader(
-                            self.test_dataset,
-                            batch_size=self.batchsize * 2,
-                            sampler=test_sampler,
-                            num_workers=self.n_worker)
-                        eval_dict = self.online_evaluate(test_dataloader)
-                        if self.distributed:
-                            eval_dict = torch.tensor([
-                                eval_dict['avg_loss'], eval_dict['avg_acc'],
-                                *eval_dict['cls_acc']
-                            ],
-                                                     device=self.device)
-                            dist.reduce(eval_dict, dst=0, op=dist.ReduceOp.SUM)
-                            eval_dict = eval_dict.cpu().numpy()
-                            eval_dict = {
-                                'avg_loss': eval_dict[0] / self.world_size,
-                                'avg_acc': eval_dict[1] / self.world_size,
-                                'cls_acc': eval_dict[2:] / self.world_size
-                            }
-                        if self.is_main_process():
-                            eval_results["test_acc"].append(
-                                eval_dict['avg_acc'])
-                            eval_results["avg_acc"].append(
-                                eval_dict['cls_acc'])
-                            eval_results["data_cnt"].append(num_eval)
-                            self.report_test(samples_cnt,
-                                             eval_dict["avg_loss"],
-                                             eval_dict['avg_acc'])
-                        num_eval += self.eval_period
-                sys.stdout.flush()
-            self.report_test(samples_cnt, eval_dict["avg_loss"],
-                             eval_dict['avg_acc'])
+                # if samples_cnt > num_eval:
+                #     with torch.no_grad():
+                #         test_sampler = OnlineTestSampler(
+                #             self.test_dataset, self.exposed_classes)
+                #         test_dataloader = DataLoader(
+                #             self.test_dataset,
+                #             batch_size=self.batchsize * 2,
+                #             sampler=test_sampler,
+                #             num_workers=self.n_worker)
+                #         eval_dict = self.online_evaluate(test_dataloader)
+                #         if self.distributed:
+                #             eval_dict = torch.tensor([
+                #                 eval_dict['avg_loss'], eval_dict['avg_acc'],
+                #                 *eval_dict['cls_acc']
+                #             ],
+                #                                      device=self.device)
+                #             dist.reduce(eval_dict, dst=0, op=dist.ReduceOp.SUM)
+                #             eval_dict = eval_dict.cpu().numpy()
+                #             eval_dict = {
+                #                 'avg_loss': eval_dict[0] / self.world_size,
+                #                 'avg_acc': eval_dict[1] / self.world_size,
+                #                 'cls_acc': eval_dict[2:] / self.world_size
+                #             }
+                #         if self.is_main_process():
+                #             eval_results["test_acc"].append(
+                #                 eval_dict['avg_acc'])
+                #             eval_results["avg_acc"].append(
+                #                 eval_dict['cls_acc'])
+                #             eval_results["data_cnt"].append(num_eval)
+                #             self.report_test(samples_cnt,
+                #                              eval_dict["avg_loss"],
+                #                              eval_dict['avg_acc'])
+                #         num_eval += self.eval_period
+                # sys.stdout.flush()
+            # self.report_test(samples_cnt, eval_dict["avg_loss"],
+            #                  eval_dict['avg_acc'])
             self.online_after_task(task_id)
 
             test_sampler = OnlineTestSampler(self.test_dataset,
@@ -378,16 +388,15 @@ class _Trainer():
                                          batch_size=self.batchsize * 2,
                                          sampler=test_sampler,
                                          num_workers=self.n_worker)
-            eval_dict = self.online_evaluate(test_dataloader)
-            #! after training done
-            # self.report_test(num_eval, eval_dict["avg_loss"], eval_dict['avg_acc'])
+            eval_dict = self.online_evaluate(test_dataloader,1000)
+
 
             if self.distributed:
                 confusion_matrix = torch.tensor(eval_dict['confusion_matrix'],
                                                 device=self.device)
                 eval_dict = torch.tensor([
                     eval_dict['avg_loss'], eval_dict['avg_acc'],
-                    *eval_dict['cls_acc']
+                    *eval_dict['cls_acc'],*eval_dict['task_acc']
                 ],
                                          device=self.device)
                 dist.reduce(eval_dict, dst=0, op=dist.ReduceOp.SUM)
@@ -398,9 +407,12 @@ class _Trainer():
                     'avg_loss': eval_dict[0] / self.world_size,
                     'avg_acc': eval_dict[1] / self.world_size,
                     'cls_acc': eval_dict[2:] / self.world_size,
+                    'task_acc': eval_dict[3:] / self.world_size,
                     "confusion_matrix": confusion_matrix
                 }
             task_acc = eval_dict['avg_acc']
+            #! after training done
+            self.report_test(1000, eval_dict["avg_loss"], task_acc)
 
             logging.info("[2-4] Update the information for the current task")
             task_records["task_acc"].append(task_acc)
@@ -457,6 +469,7 @@ class _Trainer():
                 f.write(
                     f"Dataset:{self.dataset_name} | A_auc {A_auc:.5f} | A_avg {A_avg:.5f} | A_last {A_last:.5f} | F_last {F_last:.5f}\n"
                 )
+                f.write(f'task_acc:{task_records["task_acc"]}')
 
         if self.zero_shot_evaluation:
             assert hasattr(self, 'offline_evaluate')
@@ -559,13 +572,13 @@ class _Trainer():
             pass
 
     def report_test(self, sample_num, avg_loss, avg_acc):
-        logging.info(
-            f"Test | Sample # {sample_num} | test_loss {avg_loss:.4f} | test_acc {avg_acc:.4f} | "
+        print(
+            f"Test | Sample # {sample_num} | test_loss {avg_loss:.2f} | test_acc {avg_acc:.2f} | "
         )
 
-    def report_training(self, sample_num, train_loss, train_acc):
+    def report_training(self, epoch,sample_num, train_loss, train_acc):
         print(
-            f"Train | Sample # {sample_num} | train_loss {train_loss:.4f} | train_acc {train_acc:.4f} | "
+            f"epoch:{epoch},Train | Sample # {sample_num} | train_loss {train_loss:.3f} | train_acc {train_acc:.2f} | "
             f"lr {self.optimizer.param_groups[0]['lr']:.6f} | "
             f"Num_Classes {len(self.exposed_classes)} | "
             f"running_time {datetime.timedelta(seconds=int(time.time() - self.start_time))} | "
