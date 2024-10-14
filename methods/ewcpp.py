@@ -2,13 +2,15 @@
 # This code is referred by
 # https://github.com/GT-RIPL/Continual-Learning-Benchmark
 ################################
+from abc import ABC
+
 import torch
 import logging
 from methods.er_baseline import ER
 
 logger = logging.getLogger()
 
-class EWCpp(ER):
+class EWCpp(ER, ABC):
     def __init__(
         self, **kwargs
     ):

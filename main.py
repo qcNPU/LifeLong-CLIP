@@ -1,22 +1,23 @@
 # import torch
-import os
-import time
-from configuration import config
-from datasets import *
-from methods.adapter_clip import AdapterCLIP
-from methods.er_baseline import ER
-from methods.clib import CLIB
-from methods.maple import MaPLe
-from methods.mvp_clip import CLIP_MVP
-from methods.rainbow_memory import RM
-from methods.finetuning import FT
-from methods.ewcpp import EWCpp
-from methods.lwf import LwF
-from methods.mvp import MVP
-from methods.continual_clip import ContinualCLIP
 import argparse
 import json
-# os.environ["CUDA_VISIBLE_DEVICES"]='3'
+import os
+
+from configuration import config
+from methods.adapter_clip import AdapterCLIP
+from methods.proto_clip import Proto_CLIP
+from methods.clib import CLIB
+from methods.continual_clip import ContinualCLIP
+from methods.er_baseline import ER
+from methods.ewcpp import EWCpp
+from methods.finetuning import FT
+from methods.lwf import LwF
+from methods.maple import MaPLe
+from methods.mvp import MVP
+from methods.mvp_clip import CLIP_MVP
+from methods.rainbow_memory import RM
+
+# os.environ["CUDA_VISIBLE_DEVICES"]='1,2,3'
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -33,6 +34,7 @@ methods = {
     "mvp-clip": CLIP_MVP,
     "maple": MaPLe,
     "adapter-clip": AdapterCLIP,
+    "adapter-clip-proto_prompt": Proto_CLIP,
     "lora-clip": AdapterCLIP
 }
 

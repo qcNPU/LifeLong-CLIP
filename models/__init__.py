@@ -7,6 +7,7 @@ from .continual_clip import ContinualCLIP
 from .mvp_clip import CLIP_MVP
 from .maple import MaPLe
 from .adapter_clip import AdapterCLIP
+from .proto_clip import CUSTOM_CLIP
 
 
 def get_model(method, model_name, **kwargs):
@@ -20,11 +21,12 @@ def get_model(method, model_name, **kwargs):
         return ContinualCLIP(model_name=model_name,
                              device=kwargs['device']), 224
     elif method == "adapter-clip":
-        # model_name = '/home/qc/pretrained_model/ViT-L-14.pt'
         return AdapterCLIP(model_name=model_name,
                            device=kwargs['device'],
                            peft_method='adapter',
                            peft_encoder=kwargs['peft_encoder']), 224
+    elif method == "adapter-clip-proto_prompt":
+        return CUSTOM_CLIP(kwargs['device'],kwargs['args']), 224
     elif method == "lora-clip":
         return AdapterCLIP(model_name=model_name,
                            device=kwargs['device'],

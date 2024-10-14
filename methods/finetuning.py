@@ -1,5 +1,7 @@
 # When we make a new one, we should inherit the Finetune class.
 import gc
+from abc import ABC
+
 import torch
 import numpy as np
 from utils.augment import cutmix_data
@@ -12,7 +14,7 @@ def cycle(iterable):
         for i in iterable:
             yield i
 
-class FT(_Trainer):
+class FT(_Trainer, ABC):
     def __init__(self, *args, **kwargs):
         super(FT, self).__init__(*args, **kwargs)
     

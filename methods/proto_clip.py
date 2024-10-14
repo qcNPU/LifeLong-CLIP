@@ -22,10 +22,10 @@ from utils.memory import MemoryBatchSampler
 logger = logging.getLogger()
 
 
-class AdapterCLIP(_Trainer):
+class Proto_CLIP(_Trainer):
 
     def __init__(self, **kwargs):
-        super(AdapterCLIP, self).__init__(**kwargs)
+        super(Proto_CLIP, self).__init__(**kwargs)
         self.batch_exposed_classes = []
         self.batch_exposed_classes_names = []
         self.visible_classes = self.args.get('visible_classes', 'batch')
@@ -79,13 +79,13 @@ class AdapterCLIP(_Trainer):
         y = y.to(self.device)
 
         x = self.train_transform(x)
-        # print(f'train_class_list：{train_class_list}')
+        # 只用当前batch的classname来做train
         # text_tokens = self.model.module.labels_tokenize(train_class_name_list)
-        text_tokens = self.model.module.labels_tokenize(train_class_name_list)
+        self.model.module.set_prompt_token_by_clsname(train_class_name_list)
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            logit, image_features, text_features = self.model(x, text_tokens)
+            logit, image_features, text_features = self.model(x)
             loss = self.criterion(logit, y)
         _, preds = logit.topk(self.topk, 1, True, True)
 
@@ -115,7 +115,9 @@ class AdapterCLIP(_Trainer):
     def online_before_task(self, task_id):
         # Freeze some parameters
         for k, v in self.model.named_parameters():
-            if "adaptmlp" not in k and "lora" not in k:
+            if "adaptmlp" in k or "lora" in k or "text_key" in k or "text_prompt" in k:
+                v.requires_grad = True
+            else:
                 v.requires_grad = False
 
         logger.info("Total parameters:\t{}".format(
@@ -123,7 +125,12 @@ class AdapterCLIP(_Trainer):
         logger.info("Trainable parameters:\t{}".format(
             sum(p.numel() for p in self.model.parameters()
                 if p.requires_grad)))
-
+        # double check
+        enabled = set()
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                enabled.add(name)
+        logging.info(f"Parameters to be updated: {sorted(enabled)}")
         self.reset_opt()
 
     def online_after_task(self, task_id):
@@ -135,8 +142,9 @@ class AdapterCLIP(_Trainer):
         num_data_l = torch.zeros(self.n_classes)
         label = []
         pred_list = []
-        logging.info(f"Test | exposed_classes:{self.exposed_classes},exposed_classes_names:{self.exposed_classes_names}")
         self.model.eval()
+        logging.info(f"Test | exposed_classes:{self.exposed_classes},exposed_classes_names:{self.exposed_classes_names},model.current_clsnames:{self.model.module.current_class_names}")
+
         with torch.no_grad():
             for i, data in enumerate(test_loader):
                 x, y = data
@@ -146,7 +154,7 @@ class AdapterCLIP(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit, _, _ = self.model(x)
+                logit, _, _ = self.model(x,test=True)
                 pred = torch.argmax(logit, dim=-1)
                 _, preds = logit.topk(self.topk, 1, True, True)
                 total_correct += torch.sum(preds == y.unsqueeze(1)).item()

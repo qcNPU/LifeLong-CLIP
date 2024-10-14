@@ -1,5 +1,6 @@
 import logging
 import copy
+from abc import ABC
 
 import pandas as pd
 import torch
@@ -21,7 +22,7 @@ def cycle(iterable):
         for i in iterable:
             yield i
 
-class RM(ER):
+class RM(ER, ABC):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.sched_name = "const"

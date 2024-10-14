@@ -3,7 +3,8 @@ import torch.distributed as dist
 from torch.utils.data.sampler import Sampler
 from typing import Optional, Sized, Iterable, Tuple
 import logging
-
+import numpy as np
+from torch.utils.data import DataLoader, DistributedSampler
 
 class OnlineSampler(Sampler):
 
@@ -20,6 +21,7 @@ class OnlineSampler(Sampler):
 
         self.data_source = data_source
         self.classes = self.data_source.classes
+        self.class_names = self.data_source.classes_names
         self.targets = self.data_source.targets
         self.generator = torch.Generator().manual_seed(rnd_seed)
 
@@ -46,17 +48,22 @@ class OnlineSampler(Sampler):
         self.rank = rank if rank is not None else 0
 
         self.disjoint_num = len(self.classes) * self.n // 100
-        self.disjoint_num = int(self.disjoint_num // num_tasks) * num_tasks
+        self.disjoint_num = int(self.disjoint_num // num_tasks) * num_tasks#100
         self.blurry_num = len(self.classes) - self.disjoint_num
-        self.blurry_num = int(self.blurry_num // num_tasks) * num_tasks
+        self.blurry_num = int(self.blurry_num // num_tasks) * num_tasks#0
 
         if not self.varing_NM:
             # Divide classes into N% of disjoint and (100 - N)% of blurry
             # class_order = torch.randperm(len(self.classes),generator=self.generator)#原来是随机的，改成按顺序
             class_order = torch.arange(len(self.classes))
+            class_names = [self.class_names[i] for i in class_order]
             self.disjoint_classes = class_order[:self.disjoint_num]
-            self.disjoint_classes = self.disjoint_classes.reshape(
-                num_tasks, -1).tolist()
+            self.disjoint_classes = self.disjoint_classes.reshape(num_tasks, -1).tolist()
+            self.disjoint_class_names = np.array(class_names).reshape(num_tasks, -1).tolist()
+            self.disjoint_class_num = [len(t) for t in self.disjoint_class_names]
+
+            logging.info(f'class_names:{self.disjoint_class_names};class_num:{self.disjoint_class_num}')
+
             self.blurry_classes = class_order[self.
                                               disjoint_num:self.disjoint_num +
                                               self.blurry_num]
@@ -70,6 +77,7 @@ class OnlineSampler(Sampler):
             self.blurry_indices = [[] for _ in range(num_tasks)]
             for i in range(len(self.targets)):
                 for j in range(num_tasks):
+                    #将所有数据按照label分到disjoint_indices对应的task数组中去，数组中存的是数据的index，由data[i]、target[i]即可找到数据
                     if self.targets[i] in self.disjoint_classes[j]:
                         self.disjoint_indices[j].append(i)
                         break
@@ -100,6 +108,7 @@ class OnlineSampler(Sampler):
                               len(self.blurry_indices[i])))
                 self.indices[
                     i] = self.disjoint_indices[i] + self.blurry_indices[i]
+                # 每个任务内的数据打乱
                 self.indices[i] = torch.tensor(self.indices[i])[torch.randperm(
                     len(self.indices[i]), generator=self.generator)].tolist()
         else:

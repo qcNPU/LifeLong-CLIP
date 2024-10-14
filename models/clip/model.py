@@ -570,7 +570,7 @@ class VisualTransformer(nn.Module):
                 x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x
         ],
                       dim=1)  # shape = [*, grid ** 2 + 1, width]
-        x = x + self.positional_embedding.to(x.dtype)
+        x = x + self.positional_embedding.to(x.dtype)#input,output:(32,257,1024),position:(257,1024)
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
@@ -719,7 +719,7 @@ class CLIP(nn.Module):
             return self.encode_text(text)
         elif text is None:
             return self.encode_image(image)
-        image_features = self.encode_image(image)
+        image_features = self.encode_image(image)#image(32,3,224,224),output:32,768
         text_features = self.encode_text(text)
 
         image_features = image_features / image_features.norm(dim=-1,

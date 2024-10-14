@@ -9,7 +9,8 @@ def base_parser():
     parser.add_argument(
         "--method",
         type=str,
-        default="adapter-clip",
+        default="adapter-clip-proto_prompt",
+        choices=["adapter-clip","adapter-clip-proto_prompt",],
         help="Select CIL method",
     )
     parser.add_argument(
@@ -24,7 +25,7 @@ def base_parser():
                         help="The number of tasks")
     parser.add_argument("--epochNum",
                         type=int,
-                        default=5,
+                        default=1,
                         help="The number of tasks")
     parser.add_argument(
         "--n",
@@ -42,7 +43,7 @@ def base_parser():
                         action='store_true',
                         default=False,
                         help="if True, N and M are randomly mixed over tasks.")
-    parser.add_argument("--rnd_seed", type=int, default=0,help="Random seed number.")
+    parser.add_argument("--rnd_seed", type=int, default=0, help="Random seed number.")
     parser.add_argument("--memory_size",
                         type=int,
                         default=0,
@@ -57,8 +58,8 @@ def base_parser():
     # Model
     parser.add_argument("--model_name",
                         type=str,
-                        default="'/home/qc/pretrained_model/ViT-L-14.pt'",#名字和路径都可以
-                        # default="ViT-L-14",
+                        default="/home/qc/pretrained_model/ViT-L-14.pt",  # 名字和路径都可以
+                        # default="ViT-L/14",
                         help="Model name")
 
     # Train
@@ -70,12 +71,21 @@ def base_parser():
                         type=str,
                         default="default",
                         help="Scheduler name")
-    parser.add_argument("--batchsize", type=int, default=128, help="batch size")
+    parser.add_argument("--batchsize", type=int, default=64, help="batch size")
 
     parser.add_argument("--n_worker",
                         type=int,
                         default=0,
                         help="The number of workers")
+    parser.add_argument("--ca",type=bool,default=True,help="The number of workers")
+    parser.add_argument("--ssca",type=bool,default=True,help="The number of workers")
+    parser.add_argument("--ca_epochs",type=int,default=5,help="The number of workers")
+    parser.add_argument("--feature_dim",type=int,default=768,help="The number of workers")
+    parser.add_argument("--num_prompt",type=int,default=10,help="The number of workers")
+    parser.add_argument("--n_ctx",type=int,default=12,help="The number of workers")
+    parser.add_argument("--topK",type=int,default=2,help="The number of chosen prompt")
+    parser.add_argument("--model_type",type=str,default="tune_prototype_prompt",choices=[],help="The number of workers")
+    parser.add_argument("--text_template",type=str,default="a bad photo of a {}.",choices=[],help="The number of workers")
 
     parser.add_argument("--lr", type=float, default=5e-4, help="learning rate")
     parser.add_argument(
@@ -125,7 +135,7 @@ def base_parser():
         help="weighting for the regularization loss term",
     )
 
-    parser.add_argument("--data_dir", default='/home/qc/dataset',type=str, help="location of the dataset")
+    parser.add_argument("--data_dir", default='/home/qc/dataset', type=str, help="location of the dataset")
 
     # Debug
     parser.add_argument("--debug",

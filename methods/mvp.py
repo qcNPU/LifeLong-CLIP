@@ -1,4 +1,6 @@
 import copy
+from abc import ABC
+
 from sklearn.metrics import confusion_matrix
 import torch
 import torch.nn as nn
@@ -21,7 +23,7 @@ logger = logging.getLogger()
 T = TypeVar('T', bound='nn.Module')
 
 
-class MVP(_Trainer):
+class MVP(_Trainer, ABC):
 
     def __init__(self, **kwargs):
         super(MVP, self).__init__(**kwargs)

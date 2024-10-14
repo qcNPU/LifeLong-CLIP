@@ -1,6 +1,8 @@
 # When we make a new one, we should inherit the Finetune class.
 import gc
 import logging
+from abc import ABC
+
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -20,7 +22,7 @@ def cycle(iterable):
             yield i
 
 
-class ER(_Trainer):
+class ER(_Trainer, ABC):
 
     def __init__(self, *args, **kwargs):
         super(ER, self).__init__(*args, **kwargs)

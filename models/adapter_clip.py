@@ -72,6 +72,11 @@ class AdapterCLIP(nn.Module):
 
         return result.to(self.device)
 
+    def encode_image(self,image):
+        image_features = self.model.encode_image(image)  # image:(32,3,32,32)
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        return image_features
+
     def update_class_names(self, new_class_names):
         _num = 0
         for c in new_class_names:
@@ -89,3 +94,35 @@ class AdapterCLIP(nn.Module):
             image, text_tokens)
         probs = logits_per_image.softmax(dim=-1)
         return probs, image_features, text_features
+
+
+    def tokenize(self,
+                 texts: Union[str, List[str]],
+                 context_length: int = 77) -> torch.LongTensor:
+        """
+        Returns the tokenized representation of given input string(s)
+        Parameters
+        ----------
+        texts : Union[str, List[str]]
+            An input string or a list of labels to tokenize
+        context_length : int
+            The context length to use; all CLIP models use 77 as the context length
+        Returns
+        -------
+        A two-dimensional tensor containing the resulting tokens, shape = [number of input strings, context_length]
+        """
+        if isinstance(texts, str):
+            texts = [texts]
+
+        sot_token = _tokenizer.encoder["<start_of_text>"]
+        eot_token = _tokenizer.encoder["<end_of_text>"]
+        all_tokens = [[sot_token] + _tokenizer.encode(text) + [eot_token]
+                      for text in texts]
+        result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
+
+        for i, tokens in enumerate(all_tokens):
+            if len(tokens) > context_length:  # Truncate
+                tokens = tokens[:context_length]
+            result[i, :len(tokens)] = torch.tensor(tokens)
+
+        return result.to(self.device)

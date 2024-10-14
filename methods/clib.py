@@ -1,5 +1,6 @@
 import logging
 import copy
+from abc import ABC
 
 import torch
 import torch.nn.functional as F
@@ -15,7 +16,7 @@ from datasets import *
 
 logger = logging.getLogger()
 
-class CLIB(ER):
+class CLIB(ER, ABC):
     def __init__(self, *args, **kwargs):
         super(CLIB, self).__init__(*args, **kwargs)
         self.loss = torch.empty((0,))

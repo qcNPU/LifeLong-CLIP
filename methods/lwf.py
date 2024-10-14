@@ -1,6 +1,8 @@
 # When we make a new one, we should inherit the Finetune class.
 import gc
 import copy
+from abc import ABC
+
 import torch
 import logging
 import numpy as np
@@ -17,7 +19,7 @@ def cycle(iterable):
         for i in iterable:
             yield i
 
-class LwF(ER):
+class LwF(ER, ABC):
     def __init__(self, *args, **kwargs):
         super(LwF, self).__init__(*args, **kwargs)
         # self.prev_fc=None
