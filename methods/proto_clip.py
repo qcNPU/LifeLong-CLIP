@@ -32,13 +32,14 @@ class Proto_CLIP(_Trainer):
 
 
     def online_step(self, images, labels, idx):
-        self.add_new_class(labels)
-        self.model.module.update_class_names(self.exposed_classes_names)#将新出现的classname加入到self.current_class_names变量中
+        self.add_new_class(labels)#将新出现的classname加入到self.exposed_class和_names变量中
+        if self.distributed:
+            self.model.module.update_class_names(self.exposed_classes_names)#将新出现的classname加入到self.current_class_names变量中
+        else:
+            self.model.update_class_names(self.exposed_classes_names)
 
         # train with augmented batches
         _loss, _acc, _iter = 0.0, 0.0, 0
-        # print(f'self.exposed_classes：{self.exposed_classes}，self.batch_exposed_classes：{self.batch_exposed_classes}，'
-        #       f'self.current_class_names：{self.model.module.current_class_names}')
         for _ in range(int(self.online_iter)):
             loss, acc = self.online_train([images.clone(), labels.clone()])
             _loss += loss
@@ -50,7 +51,7 @@ class Proto_CLIP(_Trainer):
         self.model.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
 
-        if self.visible_classes == 'batch':
+        if self.visible_classes == 'batch':#这个
             # batch
             train_class_list = self.batch_exposed_classes
             train_class_name_list = self.batch_exposed_classes_names
@@ -72,7 +73,7 @@ class Proto_CLIP(_Trainer):
             x = torch.cat([x, memory_images], dim=0)
             y = torch.cat([y, memory_labels], dim=0)
 
-        for j in range(len(y)):
+        for j in range(len(y)):#只用batch class做训练
             y[j] = train_class_list.index(y[j].item())
 
         x = x.to(self.device)
@@ -80,8 +81,10 @@ class Proto_CLIP(_Trainer):
 
         x = self.train_transform(x)
         # 只用当前batch的classname来做train
-        # text_tokens = self.model.module.labels_tokenize(train_class_name_list)
-        self.model.module.set_prompt_token_by_clsname(train_class_name_list)
+        if self.distributed:
+            self.model.module.set_prompt_token_by_clsname(train_class_name_list)
+        else:
+            self.model.set_prompt_token_by_clsname(train_class_name_list)
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
@@ -107,7 +110,11 @@ class Proto_CLIP(_Trainer):
         return total_loss, total_correct / total_num_data
 
     def extract_vector(self,image):
-        image_features = self.model.module.encode_image(image)#image:(32,3,32,32)
+        if self.distributed:
+            image_features = self.model.module.encode_image(image)#image:(32,3,32,32)
+        else:
+            image_features = self.model.encode_image(image)#image:(32,3,32,32)
+        # image_features = self.model(image,encode_image=True)  # image:(32,3,32,32)
         # image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         return image_features
 
@@ -143,7 +150,6 @@ class Proto_CLIP(_Trainer):
         label = []
         pred_list = []
         self.model.eval()
-        logging.info(f"Test | exposed_classes:{self.exposed_classes},exposed_classes_names:{self.exposed_classes_names},model.current_clsnames:{self.model.module.current_class_names}")
 
         with torch.no_grad():
             for i, data in enumerate(test_loader):

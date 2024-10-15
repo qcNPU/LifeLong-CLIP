@@ -19,6 +19,7 @@ class CUSTOM_CLIP(AdapterCLIP):
                            peft_encoder=args.peft_encoder)
         clip_model = self.model
         self.dtype = clip_model.dtype
+        self.device = device
         self.logit_scale = clip_model.logit_scale
         self.token_embedding = clip_model.token_embedding
         self.model_type = args.model_type
@@ -29,9 +30,9 @@ class CUSTOM_CLIP(AdapterCLIP):
         if 'prompt' in self.args.model_type:
             # ctx_dim = clip_model.ln_final.weight.shape[0]
             ctx_dim = self.feature_dim
-            text_key = torch.empty(self.num_prompt, ctx_dim, dtype=self.dtype).cuda()
+            text_key = torch.empty(self.num_prompt, ctx_dim, dtype=self.dtype).to(device)
             nn.init.normal_(text_key, std=0.02)
-            text_prompt = torch.empty(self.num_prompt, self.n_ctx, ctx_dim, dtype=self.dtype).cuda()
+            text_prompt = torch.empty(self.num_prompt, self.n_ctx, ctx_dim, dtype=self.dtype).to(device)
             nn.init.normal_(text_prompt, std=0.02)
             text_key = nn.Parameter(text_key, requires_grad=True)
             text_prompt = nn.Parameter(text_prompt, requires_grad=True)
@@ -54,6 +55,7 @@ class CUSTOM_CLIP(AdapterCLIP):
     def forward(self, image,test_class=None, test=False,image_is_feature = False):
         if image_is_feature:
             image_features = image
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         else:
             # 1. 可训练参数为：Adapter
             image_features = self.image_encoder(image.type(self.dtype))#image:(32,3,32,32)
@@ -73,7 +75,7 @@ class CUSTOM_CLIP(AdapterCLIP):
                 logits = logit_scale * (image_features * text_features).sum(-1)
             else:
                 with torch.no_grad():
-                    text_token =torch.cat([self.labels_tokenize(self.args.text_template.format(c)) for c in test_class],dim=0).cuda()
+                    text_token =torch.cat([self.labels_tokenize(self.args.text_template.format(c)) for c in test_class],dim=0).to(self.device)
                     text_features = self.text_encoder(text=text_token,need_token=True )
                     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
                 logit_scale = self.logit_scale.exp()
@@ -87,7 +89,7 @@ class CUSTOM_CLIP(AdapterCLIP):
                 probability = image_features @ self.text_key.t()
                 _, indices = probability.topk(k=min(self.args.topK, probability.shape[1]), dim=1, largest=True)
                 key_choose = self.text_key[indices]
-                text_prompt, tokenized_prompts, nc_prompts, nc_tokenized_prompts = self.prompt_learner(indices)
+                text_prompt, tokenized_prompts, nc_prompts, nc_tokenized_prompts = self.prompt_learner(indices)#indices：（32,2）
                 text_features = self.text_encoder(text=text_prompt,tokenized_prompts = tokenized_prompts)
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
                 text_features = text_features.view(image_features.shape[0], self.n_class, -1)
@@ -97,7 +99,7 @@ class CUSTOM_CLIP(AdapterCLIP):
                 logits = logit_scale * (image_features * text_features).sum(-1)
             else:
                 with torch.no_grad():
-                    text_token =torch.cat([self.labels_tokenize(self.args.text_template.format(c)) for c in self.train_cls_name],dim=0).cuda()
+                    text_token =torch.cat([self.labels_tokenize(self.args.text_template.format(c)) for c in self.train_cls_name],dim=0).to(self.device)
                     text_features = self.text_encoder(text=text_token, need_token=True)
                     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
                 logit_scale = self.logit_scale.exp()
@@ -126,7 +128,7 @@ class CUSTOM_CLIP(AdapterCLIP):
         tokenized_prompts = torch.cat([self.tokenize(p) for p in prompts])
         self.prompt_learner.tokenized_prompts = tokenized_prompts
         with torch.no_grad():
-            embedding = self.token_embedding(tokenized_prompts.cuda()).type(self.dtype)
+            embedding = self.token_embedding(tokenized_prompts.to(self.device)).type(self.dtype)
         self.prompt_learner.token_prefix= embedding[:, :1, :]  # SOS, [n_cls, 1, ctx_dim]
         self.prompt_learner.token_suffix= embedding[:, 1 + (self.n_ctx * self.args.topK):, :]  # CLS, EOS, [n_cls, -1, ctx_dim]
         self.prompt_learner.n_cls = len(classnames)
@@ -160,7 +162,7 @@ class CUSTOM_CLIP(AdapterCLIP):
         prompts = [prompt_prefix + " " + name + "." for name in classnames]
 
         # tokenized_prompts就是text encoder的text 输入
-        tokenized_prompts = torch.cat([self.tokenize(p) for p in prompts]).cuda()
+        tokenized_prompts = torch.cat([self.tokenize(p) for p in prompts]).to(self.device)
         prompt_learner.tokenized_prompts = tokenized_prompts
         with torch.no_grad():
             embedding = self.token_embedding(tokenized_prompts).type(self.dtype)
@@ -168,7 +170,7 @@ class CUSTOM_CLIP(AdapterCLIP):
         prompt_learner.register_buffer( 'token_suffix', embedding[:, 1+(prompt_learner.n_ctx*prompt_learner.args.topK):,:])# CLS, EOS
 
         nc_prompts = [prompt_prefix+"." ]
-        nc_tokenized_prompts = torch.cat([self.tokenize(p) for p in nc_prompts]).cuda()
+        nc_tokenized_prompts = torch.cat([self.tokenize(p) for p in nc_prompts]).to(self.device)
         prompt_learner.nc_tokenized_prompts = nc_tokenized_prompts
         with torch.no_grad():
             embedding = self.token_embedding(nc_tokenized_prompts).type(self.dtype)
@@ -200,7 +202,7 @@ class PromptLearner(nn.Module):
         tokenized_prompts = torch.cat([self.tokenize(p) for p in prompts])
         self.tokenized_prompts = tokenized_prompts
         with torch.no_grad():
-            embedding = self.token_embedding(tokenized_prompts.cuda()).type(self.dtype)
+            embedding = self.token_embedding(tokenized_prompts.to(self.device)).type(self.dtype)
         self.token_prefix= embedding[:, :1, :]  # SOS, [n_cls, 1, ctx_dim]
         self.token_suffix= embedding[:, 1 + (self.n_ctx * self.args.topK):, :]  # CLS, EOS, [n_cls, -1, ctx_dim]
         self.n_cls = len(classnames)

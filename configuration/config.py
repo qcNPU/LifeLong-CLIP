@@ -71,7 +71,7 @@ def base_parser():
                         type=str,
                         default="default",
                         help="Scheduler name")
-    parser.add_argument("--batchsize", type=int, default=64, help="batch size")
+    parser.add_argument("--batchsize", type=int, default=32, help="batch size")
 
     parser.add_argument("--n_worker",
                         type=int,

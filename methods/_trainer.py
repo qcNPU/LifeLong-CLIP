@@ -190,7 +190,7 @@ class _Trainer():
         self.model.to(self.device)
         self.model_without_ddp = self.model
         if self.distributed:
-            self.model = torch.nn.parallel.DistributedDataParallel(self.model)
+            self.model = torch.nn.parallel.DistributedDataParallel(self.model,device_ids=[self.gpu],output_device=self.gpu)
             self.model._set_static_graph()
             self.model_without_ddp = self.model.module
         self.criterion = self.model_without_ddp.loss_fn if hasattr(
@@ -424,7 +424,7 @@ class _Trainer():
 
         train_dataset = IndexedDataset(self.train_dataset)
         self.train_sampler = OnlineSampler(data_source=train_dataset, num_tasks=self.n_tasks, m=self.m,
-                                           n=self.n, rnd_seed=self.rnd_seed, varing_NM=self.rnd_NM,num_replicas=self.ngpus_per_nodes,rank=self.rank)
+                                           n=self.n, rnd_seed=self.rnd_seed, varing_NM=self.rnd_NM,num_replicas=(self.ngpus_per_nodes if self.distributed else None),rank=(self.rank if self.distributed else None))
         self.disjoint_classes = self.train_sampler.disjoint_classes
         self.disjoint_class_names = self.train_sampler.disjoint_class_names
         self.disjoint_class_num = self.train_sampler.disjoint_class_num
@@ -453,7 +453,9 @@ class _Trainer():
             self._total_classes = self._known_classes + self.train_sampler.disjoint_class_num[task_id]
             # 1. 在新task训练之前，用旧model提取新数据的embedding old
             if task_id > 0:
+                logging.info("extract by old model start")
                 train_embeddings_old, _ = self.extract_features(self.train_dataloader, self.model, None)
+                logging.info("extract by old model end")
             if self.method == "joint" and task_id > 0:
                 return
 
@@ -470,7 +472,7 @@ class _Trainer():
                 total_loss = 0.0
                 total_acc = 0.0
                 samples_cnt = 0
-                for i, (images, labels, idx) in enumerate(self.train_dataloader):
+                for i, (images, labels, idx) in enumerate(self.train_dataloader):#根据gpu数量做了拆分
                     if self.debug and (i + 1) * self.temp_batchsize >= 500:
                         break
                     samples_cnt += images.size(0) * self.world_size
@@ -492,11 +494,16 @@ class _Trainer():
                     self._class_means[:self._known_classes] = old_class_mean
                 logging.info("tune prototype finished")
             # 4. 计算新task 新数据的prototype
-            self._compute_class_mean(check_diff=False, oracle=False,task_id=task_id)
+            self._compute_class_mean(check_diff=False, oracle=False,task_id=task_id)#平均耗时6min
             # 重新设置 prompt token 为所有 seen class
-            self.model.module.set_prompt_token_by_clsname(self.exposed_classes_names)
+            logging.info(f"after train1,exposed_classes:{self.exposed_classes},exposed_classes_names:{self.exposed_classes_names}")
+            if self.distributed:
+                self.model.module.set_prompt_token_by_clsname(self.exposed_classes_names)
+            else:
+                self.model.set_prompt_token_by_clsname(self.exposed_classes_names)
             # 5. 根据漂移重新训练Classifier
             if task_id > 0 and self.ca_epochs > 0 and self.ca is True:
+                torch.cuda.empty_cache()
                 self._stage2_compact_classifier(self.train_sampler.disjoint_class_num[task_id], self.ca_epochs)
 
             # 6. test
@@ -555,6 +562,12 @@ class _Trainer():
                 print(line)
                 with open(os.path.join(self.log_dir, 'result.txt'), 'a') as f:
                     f.write(line + '\n')
+
+    def reduce_loss(self,loss, world_size):
+        # 将各个GPU的损失汇总
+        dist.all_reduce(loss, op=dist.ReduceOp.SUM)
+        return loss / world_size
+
 
     def add_new_class(self, class_name):
         exposed_classes = []
@@ -679,12 +692,19 @@ class _Trainer():
 
         radius = []
         for class_idx in range(self._known_classes, self._total_classes):
-
             data, targets, idx_dataset = self.get_dataset_by_indices(np.arange(class_idx, class_idx + 1), source='train',
                                                                  mode='test', ret_data=True)
-            idx_sampler = DistributedSampler(idx_dataset, num_replicas=self.ngpus_per_nodes, rank=self.gpu)
-            idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,sampler=idx_sampler,pin_memory=True)
-            vectors, _ = self._extract_vectors(idx_loader)
+            if self.distributed:
+                idx_sampler = DistributedSampler(idx_dataset, num_replicas=self.ngpus_per_nodes , rank=self.rank )
+                idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,
+                                        sampler=idx_sampler, pin_memory=True)
+            else:
+                idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,pin_memory=True)
+            logging.info(f"class {class_idx} dataset extract start")
+            vectors, _ = self._extract_vectors(idx_loader)#主要耗时是在这里，每个class要花30s
+            # vectors, _  = self.extract_features(idx_loader, self.model, None,transform=False)
+            # vectors = vectors.cpu().numpy()
+            logging.info(f"class {class_idx} dataset extract end")
 
             # vectors = np.concatenate([vectors_aug, vectors])
 
@@ -713,15 +733,8 @@ class _Trainer():
         vectors, targets = [], []
         for _, _inputs, _targets in loader:
             _targets = _targets.numpy()
-            # if isinstance(self.model, nn.DataParallel):
             _inputs = _inputs.to(self.device)
-            _vectors = self.tensor2numpy(
-                self.extract_vector(_inputs))
-            # else:
-            #     _vectors = self.tensor2numpy(
-            #         self.model.extract_vector(_inputs.to(self._device))
-            #     )
-
+            _vectors = self.tensor2numpy(self.extract_vector(_inputs))
             vectors.append(_vectors)
             targets.append(_targets)
 
@@ -788,19 +801,19 @@ class _Trainer():
                 t_id = c_id // task_size
                 decay = (t_id + 1) / (self.task_id + 1) * 0.1
                 # 取出class对应的prototype
-                cls_mean = torch.tensor(self._class_means[c_id], dtype=torch.float64).cuda() * (
+                cls_mean = torch.tensor(self._class_means[c_id], dtype=torch.float64).to(self.device) * (
                         0.9 + decay)  # torch.from_numpy(self._class_means[c_id]).to(self._device)
 
-                cls_cov = self._class_covs[c_id].cuda()
+                cls_cov = self._class_covs[c_id].to(self.device)
                 # 形成正态分布
                 m = MultivariateNormal(cls_mean.float(), cls_cov.float())
                 # 采样特征
                 sampled_data_single = m.sample(sample_shape=(num_sampled_pcls,))
-                sampled_data.append(sampled_data_single)
+                sampled_data.append(sampled_data_single)#sampled_data_single：（8,768）
                 sampled_label.extend([c_id] * num_sampled_pcls)
             # 使用采样特征再训练classifier
-            sampled_data = torch.cat(sampled_data, dim=0).half().cuda()
-            sampled_label = torch.tensor(sampled_label).long().cuda()
+            sampled_data = torch.cat(sampled_data, dim=0).to(torch.float32).to(self.device)#（160,768）
+            sampled_label = torch.tensor(sampled_label).long().to(self.device)
             inputs = sampled_data
             targets = sampled_label
             sf_indexes = torch.randperm(inputs.size(0))
@@ -812,10 +825,10 @@ class _Trainer():
                 tgt = targets[_iter * num_sampled_pcls:(_iter + 1) * num_sampled_pcls]
                 # 有prototype而没有prompt，则第二阶段tune的是adapter本身——这个分支废弃，因为无法在第二阶段只tune adapter
                 if 'prompt' not in self.model_type and 'prototype' in self.model_type:
-                    logits, _, _, _ = self.model(inp , image_is_feature=True)
+                    logits, _, _ = self.model(inp , image_is_feature=True)
                 else:
                     # -stage two only use classifiers
-                    logits = self.model(inp, image_is_feature = True)
+                    logits,_,_ = self.model(inp, image_is_feature = True)
 
                 if self.logit_norm is not None:
                     per_task_norm = []
@@ -844,6 +857,14 @@ class _Trainer():
             # test_acc = self._compute_accuracy(self.model, self.test_loader)
             print('CA Task {} => Loss {:.3f}'.format(
                 self.task_id, losses / self._total_classes))
+        logging.info("stage2 tune prompt finishied")
+
+    def sample_features(self,rank, world_size):
+        # 根据进程 rank 设置不同的随机种子，以确保不同进程的采样不同
+        torch.manual_seed(rank)
+        # 这里根据特定的特征分布采样特征
+        sampled_features = None  # 替换成你的特征分布采样逻辑
+        return sampled_features
 
 
     def is_dist_avail_and_initialized(self):
@@ -906,6 +927,10 @@ class _Trainer():
         )
 
     def report_training(self, epoch,sample_num, train_loss, train_acc):
+        total_num = torch.tensor(sample_num).cuda(self.gpu)
+        sample_num = self.reduce_loss(total_num,self.world_size)
+        avg_loss ,avg_acc= torch.tensor(train_loss, dtype=torch.float32).cuda(self.gpu),torch.tensor(train_acc, dtype=torch.float32).cuda(self.gpu)
+        train_loss ,train_acc=  self.reduce_loss(avg_loss,self.world_size),self.reduce_loss(avg_acc,self.world_size)
         logging.info(
             f"Train | epoch:{epoch}, Sample # {sample_num} | train_loss {train_loss:.3f} | train_acc {train_acc:.2f} | "
             f"lr {self.optimizer.param_groups[0]['lr']:.6f} | "
