@@ -25,7 +25,7 @@ def base_parser():
                         help="The number of tasks")
     parser.add_argument("--epochNum",
                         type=int,
-                        default=1,
+                        default=5,
                         help="The number of tasks")
     parser.add_argument(
         "--n",

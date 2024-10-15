@@ -702,8 +702,6 @@ class _Trainer():
                 idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,pin_memory=True)
             logging.info(f"class {class_idx} dataset extract start")
             vectors, _ = self._extract_vectors(idx_loader)#主要耗时是在这里，每个class要花30s
-            # vectors, _  = self.extract_features(idx_loader, self.model, None,transform=False)
-            # vectors = vectors.cpu().numpy()
             logging.info(f"class {class_idx} dataset extract end")
 
             # vectors = np.concatenate([vectors_aug, vectors])
@@ -795,7 +793,7 @@ class _Trainer():
             losses = 0.
             sampled_data = []
             sampled_label = []
-            num_sampled_pcls = 32
+            num_sampled_pcls = 16
 
             for c_id in range(crct_num):
                 t_id = c_id // task_size
