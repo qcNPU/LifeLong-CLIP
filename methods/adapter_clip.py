@@ -33,12 +33,14 @@ class AdapterCLIP(_Trainer):
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
-        self.model.module.update_class_names(self.exposed_classes_names)#将新出现的classname加入到self.current_class_names变量中
+        if self.distributed:
+            self.model.module.update_class_names(
+                self.exposed_classes_names)  # 将新出现的classname加入到self.current_class_names变量中
+        else:
+            self.model.update_class_names(self.exposed_classes_names)
 
         # train with augmented batches
         _loss, _acc, _iter = 0.0, 0.0, 0
-        # print(f'self.exposed_classes：{self.exposed_classes}，self.batch_exposed_classes：{self.batch_exposed_classes}，'
-        #       f'self.current_class_names：{self.model.module.current_class_names}')
         for _ in range(int(self.online_iter)):
             loss, acc = self.online_train([images.clone(), labels.clone()])
             _loss += loss
@@ -80,8 +82,10 @@ class AdapterCLIP(_Trainer):
 
         x = self.train_transform(x)
         # print(f'train_class_list：{train_class_list}')
-        # text_tokens = self.model.module.labels_tokenize(train_class_name_list)
-        text_tokens = self.model.module.labels_tokenize(train_class_name_list)
+        if self.distributed:
+            text_tokens = self.model.module.labels_tokenize(train_class_name_list)
+        else:
+            text_tokens = self.model.labels_tokenize(train_class_name_list)
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
@@ -107,8 +111,10 @@ class AdapterCLIP(_Trainer):
         return total_loss, total_correct / total_num_data
 
     def extract_vector(self,image):
-        image_features = self.model.module.encode_image(image)#image:(32,3,32,32)
-        # image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        if self.distributed:
+            image_features = self.model.module.encode_image(image)#image:(32,3,32,32)
+        else:
+            image_features = self.model.encode_image(image)#image:(32,3,32,32)
         return image_features
 
 

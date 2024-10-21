@@ -15,7 +15,7 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn as nn
-from PIL import Image
+
 from randaugment import RandAugment
 from torch import optim
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -41,36 +41,6 @@ from torch.utils.data import DataLoader, DistributedSampler
 # And Deit by FaceBook                                           #
 # https://github.com/facebookresearch/deit                       #
 ##################################################################
-class DummyDataset(Dataset):
-    def __init__(self, images, labels, trsf, use_path=False):
-        assert len(images) == len(labels), "Data size error!"
-        self.images = images
-        self.labels = labels
-        self.trsf = trsf
-        self.use_path = use_path
-
-    def __len__(self):
-        return len(self.images)
-
-    def __getitem__(self, idx):
-        if self.use_path:
-            image = self.trsf(self.pil_loader(self.images[idx]))
-        else:
-            image = self.trsf(Image.fromarray(self.images[idx]))
-        label = self.labels[idx]
-
-        return idx, image, label
-
-    def pil_loader(self, path):
-        """
-        Ref:
-        https://pytorch.org/docs/stable/_modules/torchvision/datasets/folder.html#ImageFolder
-        """
-        # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
-        with open(path, "rb") as f:
-            img = Image.open(f)
-            return img.convert("RGB")
-
 class _Trainer():
 
     def __init__(self, *args, **kwargs) -> None:
@@ -242,71 +212,6 @@ class _Trainer():
         self.seen = 0
 
 
-    def get_dataset_by_indices(
-            self, indices, source, mode, appendent=None, ret_data=False, m_rate=None
-    ):
-        if source == "train":
-            x, y = self.train_dataset.data, np.array(
-            self.train_dataset.targets
-        )
-        elif source == "test":
-            x, y = self.test_dataset.data, np.array(
-            self.test_dataset.targets
-        )
-        else:
-            raise ValueError("Unknown data source {}.".format(source))
-
-        if mode == "train":
-            trsf = self.train_transform
-        elif mode == "test":
-            trsf = self.test_transform
-        else:
-            raise ValueError("Unknown mode {}.".format(mode))
-
-        data, targets = [], []
-        for idx in indices:
-            if m_rate is None:
-                class_data, class_targets = self._select(
-                    x, y, low_range=idx, high_range=idx + 1
-                )
-            else:
-                class_data, class_targets = self._select_rmm(
-                    x, y, low_range=idx, high_range=idx + 1, m_rate=m_rate
-                )
-
-            data.append(class_data)
-            targets.append(class_targets)
-
-        if appendent is not None and len(appendent) != 0:
-            appendent_data, appendent_targets = appendent
-            data.append(appendent_data)
-            targets.append(appendent_targets)
-
-        data, targets = np.concatenate(data), np.concatenate(targets)
-
-        if ret_data:
-            return data, targets, DummyDataset(data, targets, trsf)
-        else:
-            return DummyDataset(data, targets, trsf)
-
-    def _select(self, x, y, low_range, high_range):
-        idxes = np.where(np.logical_and(y >= low_range, y < high_range))[0]
-        return x[idxes], y[idxes]
-
-    def _select_rmm(self, x, y, low_range, high_range, m_rate):
-        assert m_rate is not None
-        if m_rate != 0:
-            idxes = np.where(np.logical_and(y >= low_range, y < high_range))[0]
-            selected_idxes = np.random.randint(
-                0, len(idxes), size=int((1 - m_rate) * len(idxes))
-            )
-            new_idxes = idxes[selected_idxes]
-            new_idxes = np.sort(new_idxes)
-        else:
-            new_idxes = np.where(np.logical_and(y >= low_range, y < high_range))[0]
-        return x[new_idxes], y[new_idxes]
-
-
     def setup_transforms(self):
         train_transform = []
         self.cutmix = "cutmix" in self.transforms
@@ -427,6 +332,8 @@ class _Trainer():
                                            n=self.n, rnd_seed=self.rnd_seed, varing_NM=self.rnd_NM,num_replicas=(self.ngpus_per_nodes if self.distributed else None),rank=(self.rank if self.distributed else None))
         self.disjoint_classes = self.train_sampler.disjoint_classes
         self.disjoint_class_names = self.train_sampler.disjoint_class_names
+        self.all_classnames = self.train_sampler.class_names
+        self.classes = self.train_sampler.classes
         self.disjoint_class_num = self.train_sampler.disjoint_class_num
         self.train_dataloader = DataLoader(train_dataset,
                                            batch_size=self.batchsize,
@@ -451,11 +358,7 @@ class _Trainer():
         for task_id in range(self.n_tasks):
             self.task_id = task_id
             self._total_classes = self._known_classes + self.train_sampler.disjoint_class_num[task_id]
-            # 1. 在新task训练之前，用旧model提取新数据的embedding old
-            if task_id > 0:
-                logging.info("extract by old model start")
-                train_embeddings_old, _ = self.extract_features(self.train_dataloader, self.model, None)
-                logging.info("extract by old model end")
+
             if self.method == "joint" and task_id > 0:
                 return
 
@@ -481,30 +384,6 @@ class _Trainer():
                     total_acc += acc
                 self.report_training(epoch,samples_cnt, total_loss/data_len, total_acc*100/data_len)
             self.online_after_task(task_id)
-            # 2. 在新task训练之后，用新model提取新数据的embedding new
-            if task_id > 0:
-                train_embeddings_new, _ = self.extract_features(self.train_dataloader, self.model, None)
-                old_class_mean = self._class_means[:self._known_classes]
-                # 3. 根据embedding old和new计算漂移量
-                gap = self.displacement(train_embeddings_old, train_embeddings_new, old_class_mean, 4.0)
-                del train_embeddings_old,train_embeddings_new
-                gc.collect()
-                if self.ssca is True:
-                    old_class_mean += gap
-                    self._class_means[:self._known_classes] = old_class_mean
-                logging.info("tune prototype finished")
-            # 4. 计算新task 新数据的prototype
-            self._compute_class_mean(check_diff=False, oracle=False,task_id=task_id)#平均耗时6min
-            # 重新设置 prompt token 为所有 seen class
-            logging.info(f"after train1,exposed_classes:{self.exposed_classes},exposed_classes_names:{self.exposed_classes_names}")
-            if self.distributed:
-                self.model.module.set_prompt_token_by_clsname(self.exposed_classes_names)
-            else:
-                self.model.set_prompt_token_by_clsname(self.exposed_classes_names)
-            # 5. 根据漂移重新训练Classifier
-            if task_id > 0 and self.ca_epochs > 0 and self.ca is True:
-                torch.cuda.empty_cache()
-                self._stage2_compact_classifier(self.train_sampler.disjoint_class_num[task_id], self.ca_epochs)
 
             # 6. test
             eval_dict = self.evalue_afterTrain(task_records,task_id)
@@ -650,221 +529,6 @@ class _Trainer():
         logging.info("[2-5] Report task result")
         return eval_dict
 
-
-    def extract_features(self, trainloader, model, args):
-        model = model.eval()
-        embedding_list = []
-        label_list = []
-        with torch.no_grad():
-            for i, batch in enumerate(trainloader):
-                (data, label, idx)= batch
-                # data = data.cuda()
-                # label = label.cuda()
-                data = data.to(self.device)
-                data = self.train_transform(data)
-                label = label.to(self.device)
-                embedding = self.extract_vector(data)
-                embedding_list.append(embedding.cpu())
-                label_list.append(label.cpu())
-
-        embedding_list = torch.cat(embedding_list, dim=0)
-        label_list = torch.cat(label_list, dim=0)
-        return embedding_list, label_list
-
-    def _compute_class_mean(self, check_diff=False, oracle=False,task_id=None):
-        """
-        计算当前task的class的prototype，append到所有class的prototype的list中，由 range(self._known_classes, self._total_classes)控制
-        """
-        if hasattr(self, '_class_means') and self._class_means is not None and not check_diff:
-            ori_classes = self._class_means.shape[0]
-            assert ori_classes == self._known_classes
-            new_class_means = np.zeros((self._total_classes, self.feature_dim))
-            new_class_means[:self._known_classes] = self._class_means
-            self._class_means = new_class_means
-            # new_class_cov = np.zeros((self._total_classes, self.feature_dim, self.feature_dim))
-            new_class_cov = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
-            new_class_cov[:self._known_classes] = self._class_covs
-            self._class_covs = new_class_cov
-        elif not check_diff:
-            self._class_means = np.zeros((self._total_classes, self.feature_dim))  # 10,768
-            # self._class_covs = np.zeros((self._total_classes, self.feature_dim, self.feature_dim))
-            self._class_covs = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))  # 10,768,768
-
-        radius = []
-        for class_idx in range(self._known_classes, self._total_classes):
-            data, targets, idx_dataset = self.get_dataset_by_indices(np.arange(class_idx, class_idx + 1), source='train',
-                                                                 mode='test', ret_data=True)
-            if self.distributed:
-                idx_sampler = DistributedSampler(idx_dataset, num_replicas=self.ngpus_per_nodes , rank=self.rank )
-                idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,
-                                        sampler=idx_sampler, pin_memory=True)
-            else:
-                idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,pin_memory=True)
-            logging.info(f"class {class_idx} dataset extract start")
-            vectors, _ = self._extract_vectors(idx_loader)#主要耗时是在这里，每个class要花30s
-            logging.info(f"class {class_idx} dataset extract end")
-
-            # vectors = np.concatenate([vectors_aug, vectors])
-
-            class_mean = np.mean(vectors, axis=0)
-            if task_id == 0:
-                cov = np.cov(vectors.T) + np.eye(class_mean.shape[-1]) * 1e-4
-                radius.append(np.trace(cov) / 768)
-            # class_cov = np.cov(vectors.T)      计算协方差矩阵
-            class_cov = torch.cov(torch.tensor(vectors, dtype=torch.float64).T) + torch.eye(class_mean.shape[-1]) * 1e-3
-
-            self._class_means[class_idx, :] = class_mean
-            self._class_covs[class_idx, ...] = class_cov
-            del data, targets,idx_dataset
-            gc.collect()
-
-        if task_id == 0:
-            self.radius = np.sqrt(np.mean(radius))
-            logging.info(f"radius mean:{self.radius}")
-
-        logging.info("_compute_class_mean finished")
-
-        # self._class_covs.append(class_cov)
-
-    def _extract_vectors(self, loader):
-        self.model.eval()
-        vectors, targets = [], []
-        for _, _inputs, _targets in loader:
-            _targets = _targets.numpy()
-            _inputs = _inputs.to(self.device)
-            _vectors = self.tensor2numpy(self.extract_vector(_inputs))
-            vectors.append(_vectors)
-            targets.append(_targets)
-
-        return np.concatenate(vectors), np.concatenate(targets)
-
-    def extract_vector(self,image):
-        raise NotImplementedError()
-
-
-    def tensor2numpy(self, x):
-        return x.cpu().data.numpy() if x.is_cuda else x.data.numpy()
-
-    def displacement(self, Y1, Y2, embedding_old, sigma):
-        DY = Y2 - Y1
-        #
-        distance = np.sum((np.tile(Y1[None, :, :], [embedding_old.shape[0], 1, 1]) - np.tile(
-            embedding_old[:, None, :], [1, Y1.shape[0], 1])) ** 2, axis=2)
-        W = np.exp(-distance / (2 * sigma ** 2)) + 1e-5
-        W_norm = W / np.tile(np.sum(W, axis=1)[:, None], [1, W.shape[1]])
-        displacement = np.sum(np.tile(W_norm[:, :, None], [
-            1, 1, DY.shape[1]]) * np.tile(DY[None, :, :], [W.shape[0], 1, 1]), axis=1)
-        return displacement
-
-    def _stage2_compact_classifier(self, task_size, ca_epochs=5):
-        self.logit_norm = None
-        for name, param in self.model.named_parameters():
-            if 'prompt' in self.model_type and ("text_key" in name or "text_prompt" in name):
-                param.requires_grad_(True)
-            elif 'prompt' not in self.model_type and ('adaptmlp' in name or "lora" in name):
-                param.requires_grad_(True)
-            else:
-                param.requires_grad_(False)
-        # double check
-        enabled = set()
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                enabled.add(name)
-        logging.info(f"Parameters to be updated: {sorted(enabled)}")
-
-        run_epochs = ca_epochs
-        crct_num = self._total_classes
-        param_list = [p for p in self.model.parameters() if p.requires_grad]
-        network_params = [{'params': param_list, 'lr': self.lr,'weight_decay': self.wd}]
-        # network_params = [{'params': param_list}]
-
-        optimizer = optim.SGD(network_params, lr=self.lr, momentum=0.9, weight_decay=self.wd)
-        # scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[4], gamma=lrate_decay)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=run_epochs)
-
-        # self.model.to(self._device)
-        #
-        # if len(self._multiple_gpus) > 1:
-        #     self.model = nn.DataParallel(self.model, self._multiple_gpus)
-        #即使在评估模式 (model.eval()) 下，你仍然可以进行参数训练和梯度更新。评估模式主要影响模型的行为，例如 Dropout 和 Batch Normalization 层的处理方式，但不会禁用梯度计算或优化步骤。
-        self.model.eval()
-
-        for epoch in range(run_epochs):
-            losses = 0.
-            sampled_data = []
-            sampled_label = []
-            num_sampled_pcls = 16
-
-            for c_id in range(crct_num):
-                t_id = c_id // task_size
-                decay = (t_id + 1) / (self.task_id + 1) * 0.1
-                # 取出class对应的prototype
-                cls_mean = torch.tensor(self._class_means[c_id], dtype=torch.float64).to(self.device) * (
-                        0.9 + decay)  # torch.from_numpy(self._class_means[c_id]).to(self._device)
-
-                cls_cov = self._class_covs[c_id].to(self.device)
-                # 形成正态分布
-                m = MultivariateNormal(cls_mean.float(), cls_cov.float())
-                # 采样特征
-                sampled_data_single = m.sample(sample_shape=(num_sampled_pcls,))
-                sampled_data.append(sampled_data_single)#sampled_data_single：（8,768）
-                sampled_label.extend([c_id] * num_sampled_pcls)
-            # 使用采样特征再训练classifier
-            sampled_data = torch.cat(sampled_data, dim=0).to(torch.float32).to(self.device)#（160,768）
-            sampled_label = torch.tensor(sampled_label).long().to(self.device)
-            inputs = sampled_data
-            targets = sampled_label
-            sf_indexes = torch.randperm(inputs.size(0))
-            inputs = inputs[sf_indexes]
-            targets = targets[sf_indexes]
-
-            for _iter in range(crct_num):
-                inp = inputs[_iter * num_sampled_pcls:(_iter + 1) * num_sampled_pcls]  # 64,768
-                tgt = targets[_iter * num_sampled_pcls:(_iter + 1) * num_sampled_pcls]
-                # 有prototype而没有prompt，则第二阶段tune的是adapter本身——这个分支废弃，因为无法在第二阶段只tune adapter
-                if 'prompt' not in self.model_type and 'prototype' in self.model_type:
-                    logits, _, _ = self.model(inp , image_is_feature=True)
-                else:
-                    # -stage two only use classifiers
-                    logits,_,_ = self.model(inp, image_is_feature = True)
-
-                if self.logit_norm is not None:
-                    per_task_norm = []
-                    prev_t_size = 0
-                    cur_t_size = 0
-                    for _ti in range(self.task_id + 1):
-                        cur_t_size += self.dis[_ti]
-                        temp_norm = torch.norm(logits[:, prev_t_size:cur_t_size], p=2, dim=-1, keepdim=True) + 1e-7
-                        per_task_norm.append(temp_norm)
-                        prev_t_size += self.increments[_ti]
-
-                    per_task_norm = torch.cat(per_task_norm, dim=-1)
-                    norms = per_task_norm.mean(dim=-1, keepdim=True)
-                    norms_all = torch.norm(logits[:, :crct_num], p=2, dim=-1, keepdim=True) + 1e-7
-                    decoupled_logits = torch.div(logits[:, :crct_num], norms) / self.logit_norm
-                    loss = F.cross_entropy(decoupled_logits, tgt)
-                else:
-                    loss = F.cross_entropy(logits[:, :crct_num], tgt)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                losses += loss.item()
-
-            scheduler.step()
-            # test_acc = self._compute_accuracy(self.model, self.test_loader)
-            print('CA Task {} => Loss {:.3f}'.format(
-                self.task_id, losses / self._total_classes))
-        logging.info("stage2 tune prompt finishied")
-
-    def sample_features(self,rank, world_size):
-        # 根据进程 rank 设置不同的随机种子，以确保不同进程的采样不同
-        torch.manual_seed(rank)
-        # 这里根据特定的特征分布采样特征
-        sampled_features = None  # 替换成你的特征分布采样逻辑
-        return sampled_features
-
-
     def is_dist_avail_and_initialized(self):
         if not dist.is_available():
             return False
@@ -939,15 +603,16 @@ class _Trainer():
 
     def _interpret_pred(self, y, pred):
         # xlable is batch
-        ret_num_data = torch.zeros(self.n_classes)
-        ret_corrects = torch.zeros(self.n_classes)
-
-        xlabel_cls, xlabel_cnt = y.unique(return_counts=True)
+        ret_num_data = torch.zeros(10)
+        ret_corrects = torch.zeros(10)
+        cls = y // self.n_tasks
+        xlabel_cls, xlabel_cnt = cls.unique(return_counts=True)
         for cls_idx, cnt in zip(xlabel_cls, xlabel_cnt):
             ret_num_data[cls_idx] = cnt
 
         correct_xlabel = y.masked_select(y == pred)
-        correct_cls, correct_cnt = correct_xlabel.unique(return_counts=True)
+        cls_correct = correct_xlabel // self.n_tasks
+        correct_cls, correct_cnt = cls_correct.unique(return_counts=True)
         for cls_idx, cnt in zip(correct_cls, correct_cnt):
             ret_corrects[cls_idx] = cnt
 

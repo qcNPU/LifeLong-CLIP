@@ -1,4 +1,5 @@
 import copy
+import gc
 from typing import Union, List
 import numpy as np
 import torch
@@ -52,7 +53,9 @@ class CUSTOM_CLIP(AdapterCLIP):
         self.image_encoder = clip_model.visual
         self.dtype = self.image_encoder.conv1.weight.dtype
 
-    def forward(self, image,test_class=None, test=False,image_is_feature = False):
+    def forward(self, image, test_class=None, test=False, image_is_feature = False, encode_image=False):
+        if encode_image:
+            return super().encode_image(image),None,None
         if image_is_feature:
             image_features = image
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
@@ -67,6 +70,8 @@ class CUSTOM_CLIP(AdapterCLIP):
                 probability = image_features @ self.text_key.t()
                 _, indices = probability.topk(k=min(self.args.topK, probability.shape[1]), dim=1, largest=True)
                 text_prompt, tokenized_prompts = self.prompt_learner(indices, test)
+                gc.collect()
+                torch.cuda.empty_cache()
                 text_features = self.text_encoder(text_prompt, tokenized_prompts)
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
                 text_features = text_features.view(image_features.shape[0], self.n_class, -1)
@@ -90,11 +95,13 @@ class CUSTOM_CLIP(AdapterCLIP):
                 _, indices = probability.topk(k=min(self.args.topK, probability.shape[1]), dim=1, largest=True)
                 key_choose = self.text_key[indices]
                 text_prompt, tokenized_prompts, nc_prompts, nc_tokenized_prompts = self.prompt_learner(indices)#indices：（32,2）
+                gc.collect()
+                torch.cuda.empty_cache()
                 text_features = self.text_encoder(text=text_prompt,tokenized_prompts = tokenized_prompts)
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
                 text_features = text_features.view(image_features.shape[0], self.n_class, -1)
                 image_features = image_features.unsqueeze(1)
-                # torch.cuda.empty_cache()
+
                 logit_scale = self.logit_scale.exp()
                 logits = logit_scale * (image_features * text_features).sum(-1)
             else:

@@ -6,32 +6,16 @@ def base_parser():
         description="Class Incremental Learning Research")
 
     # Method and Exp. Settings.
-    parser.add_argument(
-        "--method",
-        type=str,
-        default="adapter-clip-proto_prompt",
-        choices=["adapter-clip","adapter-clip-proto_prompt",],
-        help="Select CIL method",
-    )
+    parser.add_argument("--method",type=str,default="adapter-clip-proto_prompt",choices=["adapter-clip","adapter-clip-proto_prompt",],help="Select CIL method",)
     parser.add_argument(
         "--dataset",
         type=str,
         default="cifar100",
         help="[mnist, cifar10, cifar100, imagenet]",
     )
-    parser.add_argument("--n_tasks",
-                        type=int,
-                        default=10,
-                        help="The number of tasks")
-    parser.add_argument("--epochNum",
-                        type=int,
-                        default=5,
-                        help="The number of tasks")
-    parser.add_argument(
-        "--n",
-        type=int,
-        default=100,
-        help="The percentage of disjoint split. Disjoint=100, Blurry=0")
+    parser.add_argument("--n_tasks",type=int,default=10,help="The number of tasks")
+    parser.add_argument("--epochNum", type=int,default=5,help="The number of tasks")
+    parser.add_argument("--n",type=int,default=100,help="The percentage of disjoint split. Disjoint=100, Blurry=0")
     parser.add_argument(
         "--m",
         type=int,
@@ -56,11 +40,8 @@ def base_parser():
         help="The path logs are saved.",
     )
     # Model
-    parser.add_argument("--model_name",
-                        type=str,
-                        default="/home/qc/pretrained_model/ViT-L-14.pt",  # 名字和路径都可以
-                        # default="ViT-L/14",
-                        help="Model name")
+    parser.add_argument("--model_name",type=str,default="/home/qc/pretrained_model/ViT-B-16.pt",  help="Model name")
+    # parser.add_argument("--model_name",type=str,default="/home/qc/pretrained_model/ViT-L-14.pt",  help="Model name")
 
     # Train
     parser.add_argument("--opt_name",
@@ -80,7 +61,7 @@ def base_parser():
     parser.add_argument("--ca",type=bool,default=True,help="The number of workers")
     parser.add_argument("--ssca",type=bool,default=True,help="The number of workers")
     parser.add_argument("--ca_epochs",type=int,default=5,help="The number of workers")
-    parser.add_argument("--feature_dim",type=int,default=768,help="The number of workers")
+    parser.add_argument("--feature_dim",type=int,default=512,help="The number of workers")
     parser.add_argument("--num_prompt",type=int,default=10,help="The number of workers")
     parser.add_argument("--n_ctx",type=int,default=12,help="The number of workers")
     parser.add_argument("--topK",type=int,default=2,help="The number of chosen prompt")

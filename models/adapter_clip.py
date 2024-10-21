@@ -87,6 +87,10 @@ class AdapterCLIP(nn.Module):
             self.text_tokens = self.labels_tokenize(self.current_class_names)
         return self.text_tokens
 
+    def set_prompt_token_by_clsname(self, classnames):
+        pass
+
+
     def forward(self, image, text_tokens=None):
         if text_tokens is None:
             text_tokens = self.text_tokens
