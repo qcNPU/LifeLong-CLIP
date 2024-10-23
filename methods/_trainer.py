@@ -342,7 +342,9 @@ class _Trainer():
             # 6. test
             eval_dict = self.evalue_afterTrain(task_records,task_id)
             self._known_classes = self._total_classes
+        self.save_result(task_records,eval_results,eval_dict)
 
+    def save_result(self,task_records,eval_results,eval_dict):
         np.save(os.path.join(self.log_dir, f'seed_{self.rnd_seed}.npy'), task_records["task_acc"])
         if self.eval_period is not None:
             np.save(os.path.join(self.log_dir,f'seed_{self.rnd_seed}_eval.npy'), eval_results['test_acc'])
@@ -385,6 +387,7 @@ class _Trainer():
                 print(line)
                 with open(os.path.join(self.log_dir, 'result.txt'), 'a') as f:
                     f.write(line + '\n')
+
 
     def add_new_class(self, class_name):
         exposed_classes = []

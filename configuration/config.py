@@ -10,7 +10,7 @@ def base_parser():
     parser.add_argument("--dataset", type=str, default="cifar100", help="[mnist, cifar10, cifar100, imagenet]",)
     parser.add_argument("--n_tasks", type=int, default=10, help="The number of tasks")
     parser.add_argument("--epochNum", type=int, default=1, help="The number of tasks")
-    parser.add_argument('--peft_encoder', type=str, default='image', choices=['both', 'text', 'image'], help='The encoder to inject LoRa/Adapter/Prompt')
+    parser.add_argument('--peft_encoder', type=str, default='both', choices=['both', 'text', 'image'], help='The encoder to inject LoRa/Adapter/Prompt')
     parser.add_argument("--lr", type=float, default=5e-4, help="learning rate")
     parser.add_argument("--model_name", type=str, default="/home/qc/pretrained_model/ViT-B-16.pt", help="Model name")
     parser.add_argument("--ca",type=bool,default=True,help="The number of workers")

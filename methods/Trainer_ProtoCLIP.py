@@ -35,7 +35,30 @@ class Trainer_ProtoCLIP(_Trainer):
         self.batch_exposed_classes_names = []
         self.visible_classes = self.args.get('visible_classes', 'batch')
 
+    def online_before_task(self, task_id):
+        #这里传custom_clip.module和custom_clip是一样的，会自动选择到module里的参数
+        if self.distributed:
+            model = self.custom_clip.module
+        else:
+            model = self.custom_clip
 
+        # Freeze some parameters
+        for k, v in model.named_parameters():
+            if "adaptmlp" in k or "lora" in k or "text_key" in k or "text_prompt" in k:
+                v.requires_grad = True
+            else:
+                v.requires_grad = False
+
+        logger.info("Total parameters:\t{}".format(sum(p.numel() for p in model.parameters())))
+        logger.info("Trainable parameters:\t{}".format(sum(p.numel() for p in model.parameters() if p.requires_grad)))
+        # double check
+        enabled = set()
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                enabled.add(name)
+        logging.info(f"Parameters to be updated: {sorted(enabled)}")
+        self.reset_opt(model)
+        self.compute_old_embedding()
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)#将新出现的classname加入到self.exposed_class和_names变量中
@@ -118,6 +141,54 @@ class Trainer_ProtoCLIP(_Trainer):
 
         return total_loss, total_correct / total_num_data
 
+    def online_after_task(self, task_id):
+        self.stage1_and_stage2()
+
+    def online_evaluate(self, test_loader, samples_cnt):
+        total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
+        total_correct1 = 0.0
+        correct_l = torch.zeros(self.n_tasks)
+        num_data_l = torch.zeros(self.n_tasks)
+        label = []
+        pred_list = []
+        self.custom_clip.eval()
+
+        with torch.no_grad():
+            for i, data in enumerate(test_loader):
+                x, y = data
+                # for j in range(len(y)):#标签不能按exposed
+                #     y[j] = self.exposed_classes.index(y[j].item())
+
+                x = x.cuda()
+                y = y.cuda()
+
+                logit, _, _ = self.custom_clip(x, test=True)
+                pred = torch.argmax(logit, dim=-1)
+                xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(y, pred)
+                correct_l += correct_xlabel_cnt
+                num_data_l += xlabel_cnt
+                # label += y.tolist()
+                # pred_list += pred.tolist()
+
+            avg_acc = torch.sum(correct_l) * 100 / torch.sum(num_data_l)
+            avg_loss = total_loss / torch.sum(num_data_l)
+            task_acc = np.around((correct_l * 100 / num_data_l).numpy().tolist(), 2)
+
+        # 打印每个任务的正确率
+        logging.info(f'task_acc:{task_acc}')
+
+        cm = confusion_matrix(label, pred_list)
+
+        eval_dict = {
+            "avg_loss": avg_loss,
+            "avg_acc": avg_acc,
+            "cls_acc": task_acc,
+            "task_acc": task_acc,
+            "confusion_matrix": cm.tolist()
+        }
+        return eval_dict
+
+
     def extract_vector(self,image):
         if self.distributed:
             image_features = self.custom_clip.module.encode_image(image)#image:(32,3,32,32)
@@ -128,29 +199,7 @@ class Trainer_ProtoCLIP(_Trainer):
         return image_features
 
 
-    def online_before_task(self, task_id):
-        if self.distributed:
-            model = self.custom_clip.module
-        else:
-            model = self.custom_clip
 
-        # Freeze some parameters
-        for k, v in model.named_parameters():
-            if "adaptmlp" in k or "lora" in k or "text_key" in k or "text_prompt" in k:
-                v.requires_grad = True
-            else:
-                v.requires_grad = False
-
-        logger.info("Total parameters:\t{}".format(sum(p.numel() for p in model.parameters())))
-        logger.info("Trainable parameters:\t{}".format(sum(p.numel() for p in model.parameters() if p.requires_grad)))
-        # double check
-        enabled = set()
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                enabled.add(name)
-        logging.info(f"Parameters to be updated: {sorted(enabled)}")
-        self.reset_opt(model)
-        self.compute_old_embedding()
 
     def compute_old_embedding(self):
         # 1. 在新task训练之前，用旧model提取新数据的embedding old
@@ -159,8 +208,7 @@ class Trainer_ProtoCLIP(_Trainer):
             self.train_embeddings_old, _ = self.extract_features(self.train_dataloader, self.custom_clip, None)
             logging.info("extract by old model end")
 
-    def online_after_task(self, task_id):
-        self.stage1_and_stage2()
+
 
 
     def stage1_and_stage2(self):
@@ -362,13 +410,16 @@ class Trainer_ProtoCLIP(_Trainer):
         lr = self.lr
         self.logit_norm = None
         model = self.custom_clip.module if self.distributed else self.custom_clip
+        isprompt= 'prompt' in self.model_type
+        isboth = self.peft_encoder == 'both'
         for name, param in model.named_parameters():
-            if 'prompt' in self.model_type and ("text_key" in name or "text_prompt" in name):
-                param.requires_grad_(True)
-            elif 'prompt' not in self.model_type and ('adaptmlp' in name or "lora" in name):
+            if isprompt and ("text_key" in name or "text_prompt" in name):
                 param.requires_grad_(True)
             else:
-                param.requires_grad_(False)
+                if isboth and "model.transformer" in name:
+                    param.requires_grad_(True)
+                else:
+                    param.requires_grad_(False)
         # double check
         enabled = set()
         for name, param in model.named_parameters():
@@ -466,49 +517,7 @@ class Trainer_ProtoCLIP(_Trainer):
                 self.task_id, losses / self._total_classes))
         logging.info("stage2 tune prompt finishied")
 
-    def online_evaluate(self, test_loader, samples_cnt):
-        total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
-        total_correct1 = 0.0
-        correct_l = torch.zeros(self.n_tasks)
-        num_data_l = torch.zeros(self.n_tasks)
-        label = []
-        pred_list = []
-        self.custom_clip.eval()
 
-        with torch.no_grad():
-            for i, data in enumerate(test_loader):
-                x, y = data
-                # for j in range(len(y)):#标签不能按exposed
-                #     y[j] = self.exposed_classes.index(y[j].item())
-
-                x = x.cuda()
-                y = y.cuda()
-
-                logit, _, _ = self.custom_clip(x, test=True)
-                pred = torch.argmax(logit, dim=-1)
-                xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(y, pred)
-                correct_l += correct_xlabel_cnt
-                num_data_l += xlabel_cnt
-                # label += y.tolist()
-                # pred_list += pred.tolist()
-
-            avg_acc = torch.sum(correct_l) * 100 / torch.sum(num_data_l)
-            avg_loss = total_loss / torch.sum(num_data_l)
-            task_acc = np.around((correct_l * 100 / num_data_l).numpy().tolist(), 2)
-
-        # 打印每个任务的正确率
-        logging.info(f'task_acc:{task_acc}')
-
-        cm = confusion_matrix(label, pred_list)
-
-        eval_dict = {
-            "avg_loss": avg_loss,
-            "avg_acc": avg_acc,
-            "cls_acc": task_acc,
-            "task_acc": task_acc,
-            "confusion_matrix": cm.tolist()
-        }
-        return eval_dict
 
     def offline_evaluate(self, test_loader, classes_names):
         total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
