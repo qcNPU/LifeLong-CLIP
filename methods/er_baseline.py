@@ -100,7 +100,7 @@ class ER(_Trainer, ABC):
         pass
 
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
         x, y = data
         if len(self.memory) > 0 and self.memory_batchsize > 0:
@@ -134,14 +134,14 @@ class ER(_Trainer, ABC):
         if do_cutmix:
             x, labels_a, labels_b, lam = cutmix_data(x=x, y=y, alpha=1.0)
             with torch.cuda.amp.autocast(enabled=self.use_amp):
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 logit = logit + self.mask
                 loss = lam * self.criterion(logit, labels_a.to(
                     torch.int64)) + (1 - lam) * self.criterion(
                         logit, labels_b.to(torch.int64))
         else:
             with torch.cuda.amp.autocast(enabled=self.use_amp):
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 logit = logit + self.mask
                 loss = self.criterion(logit, y.to(torch.int64))
         return logit, loss
@@ -152,7 +152,7 @@ class ER(_Trainer, ABC):
         num_data_l = torch.zeros(self.n_classes)
         label = []
 
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for i, data in enumerate(test_loader):
                 x, y = data
@@ -162,7 +162,7 @@ class ER(_Trainer, ABC):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 logit = logit + self.mask
                 loss = self.criterion(logit, y)
                 pred = torch.argmax(logit, dim=-1)

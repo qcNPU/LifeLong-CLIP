@@ -33,14 +33,12 @@ class AdapterCLIP(_Trainer):
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
-        if self.distributed:
-            self.model.module.update_class_names(
-                self.exposed_classes_names)  # 将新出现的classname加入到self.current_class_names变量中
-        else:
-            self.model.update_class_names(self.exposed_classes_names)
+        self.custom_clip.module.update_class_names(self.exposed_classes_names)#将新出现的classname加入到self.current_class_names变量中
 
         # train with augmented batches
         _loss, _acc, _iter = 0.0, 0.0, 0
+        # print(f'self.exposed_classes：{self.exposed_classes}，self.batch_exposed_classes：{self.batch_exposed_classes}，'
+        #       f'self.current_class_names：{self.model.module.current_class_names}')
         for _ in range(int(self.online_iter)):
             loss, acc = self.online_train([images.clone(), labels.clone()])
             _loss += loss
@@ -49,7 +47,7 @@ class AdapterCLIP(_Trainer):
         return _loss / _iter, _acc / _iter
 
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
 
         if self.visible_classes == 'batch':
@@ -82,14 +80,12 @@ class AdapterCLIP(_Trainer):
 
         x = self.train_transform(x)
         # print(f'train_class_list：{train_class_list}')
-        if self.distributed:
-            text_tokens = self.model.module.labels_tokenize(train_class_name_list)
-        else:
-            text_tokens = self.model.labels_tokenize(train_class_name_list)
+        # text_tokens = self.model.module.labels_tokenize(train_class_name_list)
+        self.custom_clip.module.set_token(train_class_name_list)
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            logit, image_features, text_features = self.model(x, text_tokens)
+            logit, image_features, text_features = self.custom_clip(x)
             loss = self.criterion(logit, y)
         _, preds = logit.topk(self.topk, 1, True, True)
 
@@ -111,79 +107,59 @@ class AdapterCLIP(_Trainer):
         return total_loss, total_correct / total_num_data
 
     def extract_vector(self,image):
-        if self.distributed:
-            image_features = self.model.module.encode_image(image)#image:(32,3,32,32)
-        else:
-            image_features = self.model.encode_image(image)#image:(32,3,32,32)
+        image_features = self.custom_clip.module.encode_image(image)#image:(32,3,32,32)
+        # image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         return image_features
 
 
     def online_before_task(self, task_id):
         # Freeze some parameters
-        for k, v in self.model.named_parameters():
+        for k, v in self.custom_clip.named_parameters():
             if "adaptmlp" not in k and "lora" not in k:
                 v.requires_grad = False
 
         logger.info("Total parameters:\t{}".format(
-            sum(p.numel() for p in self.model.parameters())))
+            sum(p.numel() for p in self.custom_clip.parameters())))
         logger.info("Trainable parameters:\t{}".format(
-            sum(p.numel() for p in self.model.parameters()
+            sum(p.numel() for p in self.custom_clip.parameters()
                 if p.requires_grad)))
 
         self.reset_opt()
 
     def online_after_task(self, task_id):
-        pass
+        self.custom_clip.module.set_token(self.all_classnames[:self._total_classes])
 
     def online_evaluate(self, test_loader, samples_cnt):
         total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
-        correct_l = torch.zeros(self.n_classes)
-        num_data_l = torch.zeros(self.n_classes)
+        correct_l = torch.zeros(self.n_tasks)
+        num_data_l = torch.zeros(self.n_tasks)
         label = []
         pred_list = []
-        logging.info(f"Test | exposed_classes:{self.exposed_classes},exposed_classes_names:{self.exposed_classes_names}")
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for i, data in enumerate(test_loader):
                 x, y = data
-                for j in range(len(y)):
-                    y[j] = self.exposed_classes.index(y[j].item())
+                # for j in range(len(y)):
+                #     y[j] = self.exposed_classes.index(y[j].item())
 
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit, _, _ = self.model(x)
+                logit, _, _ = self.custom_clip(x)
                 pred = torch.argmax(logit, dim=-1)
-                _, preds = logit.topk(self.topk, 1, True, True)
-                total_correct += torch.sum(preds == y.unsqueeze(1)).item()
-                total_num_data += y.size(0)
-
                 xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(y, pred)
                 correct_l += correct_xlabel_cnt.detach().cpu()
                 num_data_l += xlabel_cnt.detach().cpu()
 
+                _, preds = logit.topk(self.topk, 1, True, True)#topk=1
+                total_correct += torch.sum(correct_xlabel_cnt)
+
                 label += y.tolist()
                 pred_list += pred.tolist()
 
-        avg_acc = total_correct / total_num_data
-        avg_loss = total_loss / len(test_loader)
-        cls_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
-        num_classes_per_task = 10
-        num_tasks = len(cls_acc) // num_classes_per_task
-
-        task_acc = []
-        for i in range(num_tasks):
-            # 当前任务的类别索引
-            start_idx = i * num_classes_per_task
-            end_idx = (i + 1) * num_classes_per_task
-
-            # 当前任务的正确数量和样本总数
-            correct_per_task = correct_l[start_idx:end_idx].sum()
-            num_data_per_task = num_data_l[start_idx:end_idx].sum()
-
-            # 计算任务的正确率
-            task_acc.append(correct_per_task / (num_data_per_task + 1e-5))
-
+        avg_acc = torch.sum(correct_l) / torch.sum(num_data_l)
+        avg_loss = total_loss / torch.sum(num_data_l)
+        task_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
         # 打印每个任务的正确率
         logging.info(f'task_acc:{task_acc}')
         # print(f'task_acc:{task_acc}')
@@ -193,7 +169,7 @@ class AdapterCLIP(_Trainer):
         eval_dict = {
             "avg_loss": avg_loss,
             "avg_acc": avg_acc,
-            "cls_acc": cls_acc,
+            "cls_acc": task_acc,
             "task_acc": task_acc,
             "confusion_matrix": cm.tolist()
         }
@@ -205,8 +181,8 @@ class AdapterCLIP(_Trainer):
         num_data_l = torch.zeros(self.n_classes)
         label, pred_list = [], []
 
-        text_tokens = self.model.labels_tokenize(classes_names)
-        self.model.eval()
+        text_tokens = self.custom_clip.labels_tokenize(classes_names)
+        self.custom_clip.eval()
         with torch.no_grad():
             for data in tqdm(test_loader):
                 x, y = data
@@ -214,7 +190,7 @@ class AdapterCLIP(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit, _, _ = self.model(x, text_tokens)
+                logit, _, _ = self.custom_clip(x, text_tokens)
                 pred = torch.argmax(logit, dim=-1)
                 _, preds = logit.topk(self.topk, 1, True, True)
                 total_correct += torch.sum(preds == y.unsqueeze(1)).item()
@@ -280,7 +256,7 @@ class AdapterCLIP(_Trainer):
             self.scheduler.step()
 
     def reset_opt(self):
-        self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
+        self.optimizer = select_optimizer(self.opt_name, self.lr, self.custom_clip)
         self.scheduler = select_scheduler(self.sched_name, self.optimizer,
                                           None)
 
@@ -289,15 +265,6 @@ class AdapterCLIP(_Trainer):
         for label in class_name:
             if label.item() not in self.batch_exposed_classes:
                 self.batch_exposed_classes.append(label.item())
-        if self.distributed:
-            batch_exposed_classes = torch.cat(
-                self.all_gather(
-                    torch.tensor(self.batch_exposed_classes,
-                                 device=self.device))).cpu().tolist()
-            self.batch_exposed_classes = []
-            for cls in batch_exposed_classes:
-                if cls not in self.batch_exposed_classes:
-                    self.batch_exposed_classes.append(cls)
         self.batch_exposed_classes_names = [
             self.train_dataset.classes_names[i]
             for i in self.batch_exposed_classes

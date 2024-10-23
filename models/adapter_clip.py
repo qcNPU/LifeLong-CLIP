@@ -17,7 +17,7 @@ class AdapterCLIP(nn.Module):
                  model_name,
                  peft_method='adapter',
                  peft_encoder='both',
-                 device='cpu'):
+                 device=None):
         super(AdapterCLIP, self).__init__()
         self.device = device
 
@@ -36,6 +36,7 @@ class AdapterCLIP(nn.Module):
 
         self.text_tokens = None
         self.current_class_names = []
+        self.dtype = self.model.dtype
 
         self.prompt_template = "a bad photo of a {}."
 
@@ -83,13 +84,12 @@ class AdapterCLIP(nn.Module):
             if c not in self.current_class_names:
                 self.current_class_names.append(c)
                 _num += 1
+        text_tokens = None
         if _num > 0:
-            self.text_tokens = self.labels_tokenize(self.current_class_names)
-        return self.text_tokens
+            pass
+            # self.text_tokens = self.labels_tokenize(self.current_class_names)
 
-    def set_prompt_token_by_clsname(self, classnames):
-        pass
-
+        return text_tokens
 
     def forward(self, image, text_tokens=None):
         if text_tokens is None:
@@ -98,6 +98,11 @@ class AdapterCLIP(nn.Module):
             image, text_tokens)
         probs = logits_per_image.softmax(dim=-1)
         return probs, image_features, text_features
+
+    def set_token(self,classnames):
+        del self.text_tokens
+        self.register_buffer('text_tokens',self.labels_tokenize(classnames).cuda())  # SOS, [n_cls, 1, ctx_dim]
+
 
 
     def tokenize(self,
@@ -129,4 +134,5 @@ class AdapterCLIP(nn.Module):
                 tokens = tokens[:context_length]
             result[i, :len(tokens)] = torch.tensor(tokens)
 
-        return result.to(self.device)
+        # return result.to(self.device)
+        return result

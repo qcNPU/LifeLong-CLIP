@@ -39,7 +39,7 @@ class FT(_Trainer, ABC):
         pass
     
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
         x, y = data
         for j in range(len(y)):
@@ -70,12 +70,12 @@ class FT(_Trainer, ABC):
         if do_cutmix:
             x, labels_a, labels_b, lam = cutmix_data(x=x, y=y, alpha=1.0)
             with torch.cuda.amp.autocast(enabled=self.use_amp):
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 logit += self.mask
                 loss = lam * self.criterion(logit, labels_a) + (1 - lam) * self.criterion(logit, labels_b)
         else:
             with torch.cuda.amp.autocast(enabled=self.use_amp):
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 logit += self.mask
                 loss = self.criterion(logit, y)
         return logit, loss
@@ -86,7 +86,7 @@ class FT(_Trainer, ABC):
         num_data_l = torch.zeros(self.n_classes)
         label = []
 
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for i, data in enumerate(test_loader):
                 x, y = data
@@ -96,7 +96,7 @@ class FT(_Trainer, ABC):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 logit = logit + self.mask
                 loss = self.criterion(logit, y)
                 pred = torch.argmax(logit, dim=-1)

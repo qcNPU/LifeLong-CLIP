@@ -47,7 +47,7 @@ class LwF(ER, ABC):
             _acc += acc
             _iter += 1
         # self.update_memory(idx, labels)
-        self.old_model = self.freeze(copy.deepcopy(self.model))
+        self.old_model = self.freeze(copy.deepcopy(self.custom_clip))
         self.old_mask = copy.deepcopy(self.mask)
         del(images, labels)
         gc.collect()
@@ -115,7 +115,7 @@ class LwF(ER, ABC):
         return -1 * torch.mul(soft, pred).sum() / pred.shape[0]
     
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
         x, y = data
 
@@ -144,7 +144,7 @@ class LwF(ER, ABC):
         kd_loss =0.
         do_cutmix = self.cutmix and np.random.rand(1) < 0.5
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            ori_logit = self.model(x)
+            ori_logit = self.custom_clip(x)
             logit = ori_logit+self.mask
             loss = self.criterion(logit, y)
             if self.old_model is not None:
@@ -162,7 +162,7 @@ class LwF(ER, ABC):
         num_data_l = torch.zeros(self.n_classes)
         label = []
 
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for i, data in enumerate(test_loader):
                 x, y = data
@@ -172,7 +172,7 @@ class LwF(ER, ABC):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 logit = logit + self.mask
                 loss = self.criterion(logit, y)
                 pred = torch.argmax(logit, dim=-1)

@@ -72,7 +72,7 @@ class MVP(_Trainer, ABC):
         return _loss / _iter, _acc / _iter
 
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
 
         x, y = data
@@ -126,7 +126,7 @@ class MVP(_Trainer, ABC):
         num_data_l = torch.zeros(self.n_classes)
         label = []
         pred_list = []
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for i, data in enumerate(test_loader):
                 x, y = data
@@ -136,7 +136,7 @@ class MVP(_Trainer, ABC):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 logit = logit + self.mask
                 loss = F.cross_entropy(logit, y)
                 pred = torch.argmax(logit, dim=-1)
@@ -181,7 +181,7 @@ class MVP(_Trainer, ABC):
         pass
 
     def reset_opt(self):
-        self.optimizer = select_optimizer(self.opt_name, self.lr, self.model,
+        self.optimizer = select_optimizer(self.opt_name, self.lr, self.custom_clip,
                                           True)
         self.scheduler = select_scheduler(self.sched_name, self.optimizer,
                                           self.lr_gamma)

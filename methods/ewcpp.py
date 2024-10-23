@@ -25,7 +25,7 @@ class EWCpp(ER, ABC):
         
         # except for last layers.
         self.params = {
-            n: p for n, p in list(self.model.named_parameters())[:-2] if p.requires_grad
+            n: p for n, p in list(self.custom_clip.named_parameters())[:-2] if p.requires_grad
         }  # For convenience
         self.regularization_terms = {}
         self.task_count = 0
@@ -76,7 +76,7 @@ class EWCpp(ER, ABC):
         return reg_loss
 
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
         x, y = data
         if len(self.memory) > 0 and self.memory_batchsize > 0:

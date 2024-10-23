@@ -5,14 +5,14 @@ import logging
 import datetime
 import os.path as osp
 from tqdm import tqdm
+
+import numpy as np
+from sklearn.metrics import confusion_matrix
 from torch import optim
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.nn import functional as F
 from torch.utils.data import Dataset,DataLoader, DistributedSampler
 from PIL import Image
-
-import numpy as np
-from sklearn.metrics import confusion_matrix
 
 import torch
 import torch.nn as nn
@@ -27,21 +27,22 @@ from utils.memory import MemoryBatchSampler
 logger = logging.getLogger()
 
 
-class Proto_CLIP(_Trainer):
+class Trainer_ProtoCLIP(_Trainer):
 
     def __init__(self, **kwargs):
-        super(Proto_CLIP, self).__init__(**kwargs)
+        super(Trainer_ProtoCLIP, self).__init__(**kwargs)
         self.batch_exposed_classes = []
         self.batch_exposed_classes_names = []
         self.visible_classes = self.args.get('visible_classes', 'batch')
 
 
+
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)#将新出现的classname加入到self.exposed_class和_names变量中
         if self.distributed:
-            self.model.module.update_class_names(self.exposed_classes_names)#将新出现的classname加入到self.current_class_names变量中
+            self.custom_clip.module.update_class_names(self.exposed_classes_names)#将新出现的classname加入到self.current_class_names变量中
         else:
-            self.model.update_class_names(self.exposed_classes_names)
+            self.custom_clip.update_class_names(self.exposed_classes_names)
 
         # train with augmented batches
         _loss, _acc, _iter = 0.0, 0.0, 0
@@ -53,7 +54,7 @@ class Proto_CLIP(_Trainer):
         return _loss / _iter, _acc / _iter
 
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
 
         if self.visible_classes == 'batch':#这个
@@ -78,21 +79,25 @@ class Proto_CLIP(_Trainer):
             x = torch.cat([x, memory_images], dim=0)
             y = torch.cat([y, memory_labels], dim=0)
 
-        for j in range(len(y)):#只用batch class做训练,所以将标签替换
+        for j in range(len(y)):#只用batch class做训练
             y[j] = train_class_list.index(y[j].item())
-        x = x.to(self.device)
-        y = y.to(self.device)
+
+        # x = x.to(self.device)
+        # y = y.to(self.device)
+        x = x.cuda()
+        y = y.cuda()
 
         x = self.train_transform(x)
         # 只用当前batch的classname来做train
-        if self.distributed:
-            self.model.module.set_prompt_token_by_clsname(train_class_name_list)
-        else:
-            self.model.set_prompt_token_by_clsname(train_class_name_list)
+        self.custom_clip.module.set_prompt_token_by_clsname(classnames=train_class_name_list)
+        # if self.distributed:
+        #     result = self.set_prompt_token_by_clsname(train_class_name_list,self.custom_clip.module)
+        # else:
+        #     self.custom_clip.set_prompt_token_by_clsname(train_class_name_list)
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            logit, image_features, text_features = self.model(x)
+            logit, image_features, text_features = self.custom_clip(image=x)
             loss = self.criterion(logit, y)
         _, preds = logit.topk(self.topk, 1, True, True)
 
@@ -115,44 +120,43 @@ class Proto_CLIP(_Trainer):
 
     def extract_vector(self,image):
         if self.distributed:
-            image_features = self.model.module.encode_image(image)#image:(32,3,32,32)
+            image_features = self.custom_clip.module.encode_image(image)#image:(32,3,32,32)
         else:
-            image_features = self.model.encode_image(image)#image:(32,3,32,32)
+            image_features = self.custom_clip.encode_image(image)#image:(32,3,32,32)
         # image_features = self.model(image,encode_image=True)  # image:(32,3,32,32)
         # image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         return image_features
 
 
     def online_before_task(self, task_id):
+        if self.distributed:
+            model = self.custom_clip.module
+        else:
+            model = self.custom_clip
+
         # Freeze some parameters
-        for k, v in self.model.named_parameters():
+        for k, v in model.named_parameters():
             if "adaptmlp" in k or "lora" in k or "text_key" in k or "text_prompt" in k:
                 v.requires_grad = True
             else:
                 v.requires_grad = False
 
-        logger.info("Total parameters:\t{}".format(
-            sum(p.numel() for p in self.model.parameters())))
-        logger.info("Trainable parameters:\t{}".format(
-            sum(p.numel() for p in self.model.parameters()
-                if p.requires_grad)))
+        logger.info("Total parameters:\t{}".format(sum(p.numel() for p in model.parameters())))
+        logger.info("Trainable parameters:\t{}".format(sum(p.numel() for p in model.parameters() if p.requires_grad)))
         # double check
         enabled = set()
-        for name, param in self.model.named_parameters():
+        for name, param in model.named_parameters():
             if param.requires_grad:
                 enabled.add(name)
         logging.info(f"Parameters to be updated: {sorted(enabled)}")
-        self.reset_opt()
-
+        self.reset_opt(model)
         self.compute_old_embedding()
-
-
 
     def compute_old_embedding(self):
         # 1. 在新task训练之前，用旧model提取新数据的embedding old
         if self.task_id > 0:
             logging.info("extract by old model start")
-            self.train_embeddings_old, _ = self.extract_features(self.train_dataloader, self.model, None)
+            self.train_embeddings_old, _ = self.extract_features(self.train_dataloader, self.custom_clip, None)
             logging.info("extract by old model end")
 
     def online_after_task(self, task_id):
@@ -162,7 +166,7 @@ class Proto_CLIP(_Trainer):
     def stage1_and_stage2(self):
         # 2. 在新task训练之后，用新model提取新数据的embedding new
         if self.task_id > 0:
-            train_embeddings_new, _ = self.extract_features(self.train_dataloader, self.model, None)
+            train_embeddings_new, _ = self.extract_features(self.train_dataloader, self.custom_clip, None)
             old_class_mean = self._class_means[:self._known_classes]
             # 3. 根据embedding old和new计算漂移量
             gap = self.displacement(self.train_embeddings_old, train_embeddings_new, old_class_mean, 4.0)
@@ -175,23 +179,18 @@ class Proto_CLIP(_Trainer):
         # 4. 计算新task 新数据的prototype
         self._compute_class_mean(check_diff=False, oracle=False, task_id=self.task_id)  # 平均耗时6min
 
+        # 重新设置 prompt token 为所有 seen class
+        logging.info(f"after stage 1,known_classes:{self.classes[:self._total_classes]},known_classes_names:{self.all_classnames[:self._total_classes]}")
+        if self.distributed:
+            self.custom_clip.module.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
+        else:
+            self.custom_clip.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
         # 5. 根据漂移重新训练Classifier
         if self.task_id > 0 and self.ca_epochs > 0 and self.ca is True:
             torch.cuda.empty_cache()
-            if self.distributed:
-                self.model.module.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
-                # self.model.module.set_prompt_token_by_clsname(self.all_classnames[:self._known_classes])
-            else:
-                self.model.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
-                # self.model.set_prompt_token_by_clsname(self.all_classnames[:self._known_classes])
             self._stage2_compact_classifier(self.train_sampler.disjoint_class_num[self.task_id], self.ca_epochs)
-        # 重新设置 prompt token 为所有 seen class
-        logging.info(
-            f"after stage 1,known_classes:{self.classes[:self._total_classes]},known_classes_names:{self.all_classnames[:self._total_classes]}")
-        if self.distributed:
-            self.model.module.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
-        else:
-            self.model.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
+
+
 
     def extract_features(self, trainloader, model, args):
         model = model.eval()
@@ -202,9 +201,9 @@ class Proto_CLIP(_Trainer):
                 (data, label, idx)= batch
                 # data = data.cuda()
                 # label = label.cuda()
-                data = data.to(self.device)
+                data = data.cuda()
                 data = self.train_transform(data)
-                label = label.to(self.device)
+                label = label.cuda()
                 embedding = self.extract_vector(data)
                 embedding_list.append(embedding.cpu())
                 label_list.append(label.cpu())
@@ -236,12 +235,8 @@ class Proto_CLIP(_Trainer):
         for class_idx in range(self._known_classes, self._total_classes):
             data, targets, idx_dataset = self.get_dataset_by_indices(np.arange(class_idx, class_idx + 1), source='train',
                                                                  mode='test', ret_data=True)
-            if self.distributed:
-                idx_sampler = DistributedSampler(idx_dataset, num_replicas=self.ngpus_per_nodes , rank=self.rank )
-                idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,
-                                        sampler=idx_sampler, pin_memory=True)
-            else:
-                idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,pin_memory=True)
+
+            idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,pin_memory=True)
             logging.info(f"class {class_idx} dataset extract start")
             vectors, _ = self._extract_vectors(idx_loader)#主要耗时是在这里，每个class要花30s
             logging.info(f"class {class_idx} dataset extract end")
@@ -257,7 +252,7 @@ class Proto_CLIP(_Trainer):
 
             self._class_means[class_idx, :] = class_mean
             self._class_covs[class_idx, ...] = class_cov
-            del vectors,data, targets,idx_dataset,idx_loader
+            del data, targets,idx_dataset
             gc.collect()
 
         if task_id == 0:
@@ -336,11 +331,11 @@ class Proto_CLIP(_Trainer):
 
 
     def _extract_vectors(self, loader):
-        self.model.eval()
+        self.custom_clip.eval()
         vectors, targets = [], []
         for _, _inputs, _targets in loader:
             _targets = _targets.numpy()
-            _inputs = _inputs.to(self.device)
+            _inputs = _inputs.cuda()
             _vectors = self.tensor2numpy(self.extract_vector(_inputs))
             vectors.append(_vectors)
             targets.append(_targets)
@@ -364,8 +359,10 @@ class Proto_CLIP(_Trainer):
         return displacement
 
     def _stage2_compact_classifier(self, task_size, ca_epochs=5):
+        lr = self.lr
         self.logit_norm = None
-        for name, param in self.model.named_parameters():
+        model = self.custom_clip.module if self.distributed else self.custom_clip
+        for name, param in model.named_parameters():
             if 'prompt' in self.model_type and ("text_key" in name or "text_prompt" in name):
                 param.requires_grad_(True)
             elif 'prompt' not in self.model_type and ('adaptmlp' in name or "lora" in name):
@@ -374,18 +371,18 @@ class Proto_CLIP(_Trainer):
                 param.requires_grad_(False)
         # double check
         enabled = set()
-        for name, param in self.model.named_parameters():
+        for name, param in model.named_parameters():
             if param.requires_grad:
                 enabled.add(name)
         logging.info(f"Parameters to be updated: {sorted(enabled)}")
 
         run_epochs = ca_epochs
         crct_num = self._known_classes
-        param_list = [p for p in self.model.parameters() if p.requires_grad]
-        network_params = [{'params': param_list, 'lr': self.lr,'weight_decay': self.wd}]
+        param_list = [p for p in model.parameters() if p.requires_grad]
+        network_params = [{'params': param_list, 'lr': lr,'weight_decay': self.wd}]
         # network_params = [{'params': param_list}]
 
-        optimizer = optim.SGD(network_params, lr=self.lr, momentum=0.9, weight_decay=self.wd)
+        optimizer = optim.SGD(network_params, lr=lr, momentum=0.9, weight_decay=self.wd)
         # scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[4], gamma=lrate_decay)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=run_epochs)
 
@@ -394,31 +391,33 @@ class Proto_CLIP(_Trainer):
         # if len(self._multiple_gpus) > 1:
         #     self.model = nn.DataParallel(self.model, self._multiple_gpus)
         #即使在评估模式 (model.eval()) 下，你仍然可以进行参数训练和梯度更新。评估模式主要影响模型的行为，例如 Dropout 和 Batch Normalization 层的处理方式，但不会禁用梯度计算或优化步骤。
-        self.model.eval()
+        self.custom_clip.eval()
+
+        cls_normals = {}
+        for c_id in range(crct_num):
+            t_id = c_id // task_size
+            decay = (t_id + 1) / (self.task_id + 1) * 0.1
+            # 取出class对应的prototype
+            cls_mean = torch.tensor(self._class_means[c_id], dtype=torch.float64) * (0.9 + decay)  # torch.from_numpy(self._class_means[c_id]).to(self._device)
+            cls_cov = self._class_covs[c_id]
+            # 形成正态分布
+            m = MultivariateNormal(cls_mean.float(), cls_cov.float())
+            cls_normals[c_id] = m
 
         for epoch in range(run_epochs):
             losses = 0.
             sampled_data = []
             sampled_label = []
-            num_sampled_pcls = 8
+            num_sampled_pcls = 16
 
             for c_id in range(crct_num):
-                t_id = c_id // task_size
-                decay = (t_id + 1) / (self.task_id + 1) * 0.1
-                # 取出class对应的prototype
-                cls_mean = torch.tensor(self._class_means[c_id], dtype=torch.float64) * (
-                        0.9 + decay)  # torch.from_numpy(self._class_means[c_id]).to(self._device)
-
-                cls_cov = self._class_covs[c_id]
-                # 形成正态分布
-                m = MultivariateNormal(cls_mean.float(), cls_cov.float())
                 # 采样特征
-                sampled_data_single = m.sample(sample_shape=(num_sampled_pcls,))
+                sampled_data_single = cls_normals[c_id].sample(sample_shape=(num_sampled_pcls,))
                 sampled_data.append(sampled_data_single)#sampled_data_single：（8,768）
                 sampled_label.extend([c_id] * num_sampled_pcls)
             # 使用采样特征再训练classifier
-            sampled_data = torch.cat(sampled_data, dim=0).to(torch.float32).to(self.device)#（160,768）
-            sampled_label = torch.tensor(sampled_label).long().to(self.device)
+            sampled_data = torch.cat(sampled_data, dim=0).to(torch.float32).cuda()#（160,768）
+            sampled_label = torch.tensor(sampled_label).long().cuda()
             inputs = sampled_data
             targets = sampled_label
             sf_indexes = torch.randperm(inputs.size(0))
@@ -430,10 +429,10 @@ class Proto_CLIP(_Trainer):
                 tgt = targets[_iter * num_sampled_pcls:(_iter + 1) * num_sampled_pcls]
                 # 有prototype而没有prompt，则第二阶段tune的是adapter本身——这个分支废弃，因为无法在第二阶段只tune adapter
                 if 'prompt' not in self.model_type and 'prototype' in self.model_type:
-                    logits, _, _ = self.model(inp , image_is_feature=True)
+                    logits, _, _ = self.custom_clip(inp, image_is_feature=True)
                 else:
                     # -stage two only use classifiers
-                    logits,_,_ = self.model(inp, image_is_feature = True)
+                    logits,_,_ = self.custom_clip(inp, image_is_feature = True)
 
                 if self.logit_norm is not None:
                     per_task_norm = []
@@ -459,13 +458,13 @@ class Proto_CLIP(_Trainer):
                 losses += loss.item()
                 del inp,tgt
                 gc.collect()
-
+            del sampled_data,sampled_label,inputs,targets
+            gc.collect()
             scheduler.step()
             # test_acc = self._compute_accuracy(self.model, self.test_loader)
             print('CA Task {} => Loss {:.3f}'.format(
                 self.task_id, losses / self._total_classes))
         logging.info("stage2 tune prompt finishied")
-
 
     def online_evaluate(self, test_loader, samples_cnt):
         total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
@@ -474,7 +473,7 @@ class Proto_CLIP(_Trainer):
         num_data_l = torch.zeros(self.n_tasks)
         label = []
         pred_list = []
-        self.model.eval()
+        self.custom_clip.eval()
 
         with torch.no_grad():
             for i, data in enumerate(test_loader):
@@ -482,31 +481,23 @@ class Proto_CLIP(_Trainer):
                 # for j in range(len(y)):#标签不能按exposed
                 #     y[j] = self.exposed_classes.index(y[j].item())
 
-                x = x.to(self.device)
-                y = y.to(self.device)
+                x = x.cuda()
+                y = y.cuda()
 
-                logit, _, _ = self.model(x,test=True)
+                logit, _, _ = self.custom_clip(x, test=True)
                 pred = torch.argmax(logit, dim=-1)
                 xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(y, pred)
-                correct_l += correct_xlabel_cnt.detach().item()
-                num_data_l += xlabel_cnt.detach().item()
+                correct_l += correct_xlabel_cnt
+                num_data_l += xlabel_cnt
+                # label += y.tolist()
+                # pred_list += pred.tolist()
 
-                _, preds = logit.topk(self.topk, 1, True, True)#topk=1
-                total_correct += torch.sum(correct_xlabel_cnt)
-                total_correct1 += torch.sum(preds == y.unsqueeze(1)).item()
-                logging.info(f"correct:{total_correct}  {total_correct1}")
-
-
-                label += y.tolist()
-                pred_list += pred.tolist()
-
-        avg_acc = torch.sum(correct_l) / torch.sum(num_data_l)
-        avg_loss = total_loss / torch.sum(num_data_l)
-        task_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
+            avg_acc = torch.sum(correct_l) * 100 / torch.sum(num_data_l)
+            avg_loss = total_loss / torch.sum(num_data_l)
+            task_acc = np.around((correct_l * 100 / num_data_l).numpy().tolist(), 2)
 
         # 打印每个任务的正确率
         logging.info(f'task_acc:{task_acc}')
-        # print(f'task_acc:{task_acc}')
 
         cm = confusion_matrix(label, pred_list)
 
@@ -519,30 +510,14 @@ class Proto_CLIP(_Trainer):
         }
         return eval_dict
 
-    def _accuracy_mean_task(self, logits):
-        acc_per_task = [0 for _ in range(ses + 1)]
-        count_per_task = [0 for _ in range(ses + 1)]
-        for i, (x, y) in enumerate(loader):
-            self.model.eval()
-            pred_y = self.inference(x.cuda(), y.cuda(), ses, test_class)
-            _, top_labels = pred_y.topk(1, dim=-1)
-            for t in range(ses + 1):
-                acc_per_task[t] += ((top_labels.view(-1) == y.cuda()) * (y.cuda() // self.args.class_per_task == t)).sum().item()
-                count_per_task[t] += (y.cuda() // self.args.class_per_task == t).sum().item()
-        acc = [a * 1.0 / c for (a, c) in zip(acc_per_task, count_per_task)]
-        # acc = np.array(acc).mean()
-
-        return acc
-
-
     def offline_evaluate(self, test_loader, classes_names):
         total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
         correct_l = torch.zeros(self.n_classes)
         num_data_l = torch.zeros(self.n_classes)
         label, pred_list = [], []
 
-        text_tokens = self.model.labels_tokenize(classes_names)
-        self.model.eval()
+        text_tokens = self.custom_clip.labels_tokenize(classes_names)
+        self.custom_clip.eval()
         with torch.no_grad():
             for data in tqdm(test_loader):
                 x, y = data
@@ -550,7 +525,7 @@ class Proto_CLIP(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit, _, _ = self.model(x, text_tokens)
+                logit, _, _ = self.custom_clip(x, text_tokens)
                 pred = torch.argmax(logit, dim=-1)
                 _, preds = logit.topk(self.topk, 1, True, True)
                 total_correct += torch.sum(preds == y.unsqueeze(1)).item()
@@ -615,8 +590,8 @@ class Proto_CLIP(_Trainer):
         else:
             self.scheduler.step()
 
-    def reset_opt(self):
-        self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
+    def reset_opt(self,model):
+        self.optimizer = select_optimizer(self.opt_name, self.lr, model)
         self.scheduler = select_scheduler(self.sched_name, self.optimizer,
                                           None)
 
@@ -625,15 +600,6 @@ class Proto_CLIP(_Trainer):
         for label in class_name:
             if label.item() not in self.batch_exposed_classes:
                 self.batch_exposed_classes.append(label.item())
-        if self.distributed:
-            batch_exposed_classes = torch.cat(
-                self.all_gather(
-                    torch.tensor(self.batch_exposed_classes,
-                                 device=self.device))).cpu().tolist()
-            self.batch_exposed_classes = []
-            for cls in batch_exposed_classes:
-                if cls not in self.batch_exposed_classes:
-                    self.batch_exposed_classes.append(cls)
         self.batch_exposed_classes_names = [
             self.train_dataset.classes_names[i]
             for i in self.batch_exposed_classes

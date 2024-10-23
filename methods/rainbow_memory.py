@@ -53,7 +53,7 @@ class RM(ER, ABC):
         return _loss / _iter, _acc / _iter
 
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
         x, y = data
         for j in range(len(y)):
@@ -112,7 +112,7 @@ class RM(ER, ABC):
         self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lambda iter: 1)
 
     def online_after_task(self, cur_iter):
-        self.model.train()
+        self.custom_clip.train()
         # self.optimizer = select_optimizer(self.opt_name,self.lr,self.model)
         # self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
         #         self.optimizer, T_0=1, T_mult=2, eta_min=self.lr * 0.01
@@ -135,7 +135,7 @@ class RM(ER, ABC):
         self.memory_sampler = MemoryOrderedSampler(self.memory, self.batchsize, 1)
         self.memory_dataloader = DataLoader(self.train_dataset, batch_size=self.batchsize, sampler=self.memory_sampler, num_workers=4, pin_memory=True)
         for epoch in range(n_epoch):
-            self.model.train()
+            self.custom_clip.train()
             self.memory_sampler = MemoryOrderedSampler(self.memory, self.batchsize, len(self.memory) // self.batchsize)
             self.memory_dataloader = DataLoader(self.loss_update_dataset, batch_size=self.batchsize, sampler=self.memory_sampler, num_workers=4, pin_memory=True)
             
@@ -229,12 +229,12 @@ class RM(ER, ABC):
             infer_dataset, shuffle=False, batch_size=batch_size, num_workers=2
         )
 
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for n_batch, data in enumerate(infer_loader):
                 x = data["image"]
                 x = x.to(self.device)
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 logit = logit.detach().cpu()
 
                 for i, cert_value in enumerate(logit):

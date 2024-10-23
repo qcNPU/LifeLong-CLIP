@@ -100,6 +100,10 @@ def load(name: str,
         The CLIP model
     preprocess : Callable[[PIL.Image], torch.Tensor]
         A torchvision transform that converts a PIL image into a tensor that the returned model can take as its input
+        :param jit:
+        :param name:
+        :param device:
+        :param design_details:
     """
     if name in _MODELS:
         model_path = _download(_MODELS[name])

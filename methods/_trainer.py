@@ -15,7 +15,7 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn as nn
-
+from PIL import Image
 from randaugment import RandAugment
 from torch import optim
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -32,6 +32,8 @@ from utils.memory import Memory
 from utils.online_sampler import OnlineSampler, OnlineTestSampler
 from utils.train_utils import select_optimizer, select_scheduler
 from torch.utils.data import DataLoader, DistributedSampler
+logging.basicConfig(level=logging.INFO,  # 设置日志级别
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 ##################################################################
@@ -85,6 +87,7 @@ class _Trainer():
         self.n_ctx = kwargs.get("n_ctx")
         self.topK = kwargs.get("topK")
         self.text_template = kwargs.get("text_template")
+        self.peft_encoder = kwargs.get("peft_encoder")
         self.wd = 0.0
         self.task_id = 0
         self.disjoint_classes = None
@@ -125,17 +128,15 @@ class _Trainer():
 
 
         self.ngpus_per_nodes = torch.cuda.device_count()
-        # self.ngpus_per_nodes = 3
         self.world_size = 1
         if "WORLD_SIZE" in os.environ and os.environ["WORLD_SIZE"] != '':
             self.world_size = int(
                 os.environ["WORLD_SIZE"]) * self.ngpus_per_nodes
         else:
             self.world_size = self.world_size * self.ngpus_per_nodes#4
-        self.distributed = self.world_size > 1
-
-        if self.distributed:
-            self.batchsize = self.batchsize // self.world_size#64,4,16
+        # self.distributed = self.world_size > 1
+        # if self.distributed:
+        #     self.batchsize = self.batchsize // self.world_size#64,4,16
         if self.temp_batchsize is None:
             self.temp_batchsize = self.batchsize // 2
         if self.temp_batchsize > self.batchsize:
@@ -154,26 +155,16 @@ class _Trainer():
 
     def setup_distributed_model(self):
         logging.info("Building model...")
-        self.model = self.model.to(self.device)
+        # self.device = torch.device(self.gpu_ids[0])
+        # self.custom_clip = self.custom_clip.to(self.device)
+
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
-
-        self.model.to(self.device)
-        self.model_without_ddp = self.model
-        if self.distributed:
-            self.model = torch.nn.parallel.DistributedDataParallel(self.model,device_ids=[self.gpu],output_device=self.gpu)
-            self.model._set_static_graph()
-            self.model_without_ddp = self.model.module
-        self.criterion = self.model_without_ddp.loss_fn if hasattr(
-            self.model_without_ddp, "loss_fn") else nn.CrossEntropyLoss(
-                reduction="mean")
-        self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
+        self.criterion =  nn.CrossEntropyLoss(reduction="mean")
+        self.optimizer = select_optimizer(self.opt_name, self.lr, self.custom_clip)
         self.scheduler = select_scheduler(self.sched_name, self.optimizer)
-
-        n_params = sum(p.numel() for p in self.model_without_ddp.parameters())
-        logging.info(f"Total Parameters :\t{n_params}")
-        n_params = sum(p.numel() for p in self.model_without_ddp.parameters()
-                       if p.requires_grad)
-        logging.info(f"Learnable Parameters :\t{n_params}")
+        if self.distributed:
+            self.custom_clip = nn.DataParallel(self.custom_clip)
+        self.custom_clip = self.custom_clip.cuda()
 
     def setup_zero_shot_dataset(self, dataset_name):
         dataset, mean, std, _ = get_dataset(dataset_name)
@@ -210,7 +201,6 @@ class _Trainer():
         self.exposed_classes = []
         self.exposed_classes_names = []
         self.seen = 0
-
 
     def setup_transforms(self):
         train_transform = []
@@ -250,46 +240,9 @@ class _Trainer():
         ])
 
     def run(self):
-        # Distributed Launch
-        if self.ngpus_per_nodes > 1:# 4个gpu
-            mp.spawn(self.main_worker, nprocs=self.ngpus_per_nodes, join=True)
-        else:
-            self.main_worker(0)
-
-    def main_worker(self, gpu) -> None:
-        self.gpu = gpu % self.ngpus_per_nodes
-        self.device = torch.device(self.gpu)
-        if self.distributed:#True
-            self.local_rank = self.gpu
-            if 'SLURM_PROCID' in os.environ.keys():
-                self.rank = int(os.environ['SLURM_PROCID']
-                                ) * self.ngpus_per_nodes + self.gpu
-                print(
-                    f"| Init Process group {os.environ['SLURM_PROCID']} : {self.local_rank}"
-                )
-            elif 'WORLD_SIZE' in os.environ.keys():
-                self.rank = int(
-                    os.environ['RANK']) * self.ngpus_per_nodes + self.gpu
-                print(
-                    f"| Init Process group {os.environ['RANK']} : {self.local_rank}"
-                )
-            else:
-                self.rank = self.gpu# 1
-                print(f"| Init Process group 0 : {self.local_rank}")
-            if 'MASTER_ADDR' not in os.environ.keys():
-                os.environ['MASTER_ADDR'] = '127.0.0.1'#2
-                os.environ['MASTER_PORT'] = '12701'
-            torch.cuda.set_device(self.gpu)
-            time.sleep(self.rank * 0.1)  # prevent port collision
-            dist.init_process_group(backend=self.dist_backend,
-                                    init_method=self.dist_url,
-                                    world_size=self.world_size,
-                                    rank=self.rank)
-            torch.distributed.barrier()
-            self.setup_for_distributed(self.is_main_process())
-        else:
-            self.setup_for_distributed(True)
-
+        self.gpu_ids = list(range(self.ngpus_per_nodes))
+        self.distributed = self.ngpus_per_nodes>1
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logging.info(str(self.args))
 
         if self.rnd_seed is not None:
@@ -311,15 +264,16 @@ class _Trainer():
         self.dataset, self.mean, self.std, self.n_classes = get_dataset(
             self.dataset_name)
         logging.info(f"Building model ({self.model_name})")
-        self.model, self.inp_size = get_model(
+        self.custom_clip, self.inp_size = get_model(
             model_name=self.model_name,
             method=self.method,
             num_classes=self.n_classes,
-            device=self.device,
+            device=torch.device('cpu'),#这里设置加载device
             peft_encoder=self.args['peft_encoder'],
             args = argparse.Namespace(**self.args)
         )
-        # self.dtype = self.model.model.dtype
+
+        self.dtype = self.custom_clip.dtype
 
         self.setup_transforms()
         self.setup_dataset()
@@ -329,7 +283,7 @@ class _Trainer():
 
         train_dataset = IndexedDataset(self.train_dataset)
         self.train_sampler = OnlineSampler(data_source=train_dataset, num_tasks=self.n_tasks, m=self.m,
-                                           n=self.n, rnd_seed=self.rnd_seed, varing_NM=self.rnd_NM,num_replicas=(self.ngpus_per_nodes if self.distributed else None),rank=(self.rank if self.distributed else None))
+                                           n=self.n, rnd_seed=self.rnd_seed, varing_NM=self.rnd_NM)
         self.disjoint_classes = self.train_sampler.disjoint_classes
         self.disjoint_class_names = self.train_sampler.disjoint_class_names
         self.all_classnames = self.train_sampler.class_names
@@ -378,7 +332,7 @@ class _Trainer():
                 for i, (images, labels, idx) in enumerate(self.train_dataloader):#根据gpu数量做了拆分
                     if self.debug and (i + 1) * self.temp_batchsize >= 500:
                         break
-                    samples_cnt += images.size(0) * self.world_size
+                    samples_cnt += images.size(0)
                     loss, acc = self.online_step(images, labels, idx)
                     total_loss += loss
                     total_acc += acc
@@ -388,47 +342,36 @@ class _Trainer():
             # 6. test
             eval_dict = self.evalue_afterTrain(task_records,task_id)
             self._known_classes = self._total_classes
-        if self.is_main_process():
-            np.save(os.path.join(self.log_dir, f'seed_{self.rnd_seed}.npy'),
-                    task_records["task_acc"])
 
-            if self.eval_period is not None:
-                np.save(
-                    os.path.join(self.log_dir,f'seed_{self.rnd_seed}_eval.npy'),
-                    eval_results['test_acc'])
-                np.save(
-                    os.path.join(self.log_dir,f'seed_{self.rnd_seed}_eval_time.npy'),
-                    eval_results['data_cnt'])
-                if 'confusion_matrix' in eval_dict:
-                    np.save(
-                        os.path.join(self.log_dir,f'seed_{self.rnd_seed}_confusion_matrix.npy'),
-                        eval_dict['confusion_matrix'])
+        np.save(os.path.join(self.log_dir, f'seed_{self.rnd_seed}.npy'), task_records["task_acc"])
+        if self.eval_period is not None:
+            np.save(os.path.join(self.log_dir,f'seed_{self.rnd_seed}_eval.npy'), eval_results['test_acc'])
+            np.save(os.path.join(self.log_dir,f'seed_{self.rnd_seed}_eval_time.npy'), eval_results['data_cnt'])
+            if 'confusion_matrix' in eval_dict:
+                np.save(os.path.join(self.log_dir,f'seed_{self.rnd_seed}_confusion_matrix.npy'), eval_dict['confusion_matrix'])
 
-            # Accuracy (A)
-            A_auc = np.mean(eval_results["test_acc"])
-            A_avg = np.mean(task_records["task_acc"])
-            A_last = task_records["task_acc"][self.n_tasks - 1]
+        # Accuracy (A)
+        A_auc = np.mean(eval_results["test_acc"])
+        A_avg = np.mean(task_records["task_acc"])
+        A_last = task_records["task_acc"][self.n_tasks - 1]
 
-            # Forgetting (F)
-            cls_acc = np.array(task_records["cls_acc"])
-            acc_diff = []
-            for j in range(self.n_classes):
-                if np.max(cls_acc[:-1, j]) > 0:
-                    acc_diff.append(np.max(cls_acc[:-1, j]) - cls_acc[-1, j])
-            F_last = np.mean(acc_diff)
+        # Forgetting (F)
+        cls_acc = np.array(task_records["cls_acc"])
+        acc_diff = []
+        for j in range(self.n_tasks):
+            if np.max(cls_acc[:-1, j]) > 0:
+                acc_diff.append(np.max(cls_acc[:-1, j]) - cls_acc[-1, j])
+        F_last = np.mean(acc_diff)
 
-            logging.info(f"======== Summary =======")
-            logging.info(f"Exposed Classes: {self.exposed_classes}")
-            for i in range(len(cls_acc)):
-                logging.info(f"Task {i}\n" + str(cls_acc[i]))
-            logging.info(
-                f"A_auc {A_auc:.5f} | A_avg {A_avg:.5f} | A_last {A_last:.5f} | F_last {F_last:.5f}"
-            )
-            with open(os.path.join(self.log_dir, 'result.txt'), 'w') as f:
-                f.write(
-                    f"Dataset:{self.dataset_name} | A_auc {A_auc:.5f} | A_avg {A_avg:.5f} | A_last {A_last:.5f} | F_last {F_last:.5f}\n"
-                )
-                f.write(f'task_acc:{task_records["task_acc"]}')
+        logging.info(f"======== Summary =======")
+        logging.info(f"Exposed Classes: {self.exposed_classes}")
+        for i in range(len(cls_acc)):
+            logging.info(f"Task {i}:" + str(cls_acc[i]))
+        logging.info(f"Task avg:"+str(task_records["task_acc"]))
+        logging.info(f"A_avg {A_avg:.5f} | A_last {A_last:.5f} | F_last {F_last:.5f}")
+        with open(os.path.join(self.log_dir, 'result.txt'), 'w') as f:
+            f.write(f"Dataset:{self.dataset_name} | A_auc {A_auc:.5f} | A_avg {A_avg:.5f} | A_last {A_last:.5f} | F_last {F_last:.5f}\n")
+            f.write(f'task_acc:{task_records["task_acc"]}')
 
         if self.zero_shot_evaluation:
             assert hasattr(self, 'offline_evaluate')
@@ -442,26 +385,11 @@ class _Trainer():
                 with open(os.path.join(self.log_dir, 'result.txt'), 'a') as f:
                     f.write(line + '\n')
 
-    def reduce_loss(self,loss, world_size):
-        # 将各个GPU的损失汇总
-        dist.all_reduce(loss, op=dist.ReduceOp.SUM)
-        return loss / world_size
-
-
     def add_new_class(self, class_name):
         exposed_classes = []
         for label in class_name:
             if label.item() not in self.exposed_classes:
                 self.exposed_classes.append(label.item())
-        if self.distributed:
-            exposed_classes = torch.cat(
-                self.all_gather(
-                    torch.tensor(self.exposed_classes,
-                                 device=self.device))).cpu().tolist()
-            self.exposed_classes = []
-            for cls in exposed_classes:
-                if cls not in self.exposed_classes:
-                    self.exposed_classes.append(cls)
         self.memory.add_new_class(cls_list=self.exposed_classes)
 
         self.exposed_classes_names = [
@@ -493,25 +421,6 @@ class _Trainer():
                                      num_workers=self.n_worker)
         eval_dict = self.online_evaluate(test_dataloader, 1000)
 
-        if self.distributed:
-            confusion_matrix = torch.tensor(eval_dict['confusion_matrix'],
-                                            device=self.device)
-            eval_dict = torch.tensor([
-                eval_dict['avg_loss'], eval_dict['avg_acc'],
-                *eval_dict['cls_acc'], *eval_dict['task_acc']
-            ],
-                device=self.device)
-            dist.reduce(eval_dict, dst=0, op=dist.ReduceOp.SUM)
-            dist.reduce(confusion_matrix, dst=0, op=dist.ReduceOp.SUM)
-            eval_dict = eval_dict.cpu().numpy()
-            confusion_matrix = confusion_matrix.cpu().numpy()
-            eval_dict = {
-                'avg_loss': eval_dict[0] / self.world_size,
-                'avg_acc': eval_dict[1] / self.world_size,
-                'cls_acc': eval_dict[2:] / self.world_size,
-                'task_acc': eval_dict[3:] / self.world_size,
-                "confusion_matrix": confusion_matrix
-            }
         task_acc = eval_dict['avg_acc']
         # ! after training done
         self.report_test(1000, eval_dict["avg_loss"], task_acc)
@@ -519,13 +428,6 @@ class _Trainer():
         logging.info("[2-4] Update the information for the current task")
         task_records["task_acc"].append(task_acc)
         task_records["cls_acc"].append(eval_dict["cls_acc"])
-        if self.is_main_process() and 'confusion_matrix' in eval_dict:
-            np.save(
-                os.path.join(
-                    self.log_dir,
-                    f'seed_{self.rnd_seed}_T{task_id}_confusion_matrix.npy'
-                ), eval_dict['confusion_matrix'])
-
         logging.info("[2-5] Report task result")
         return eval_dict
 
@@ -589,10 +491,6 @@ class _Trainer():
         )
 
     def report_training(self, epoch,sample_num, train_loss, train_acc):
-        total_num = torch.tensor(sample_num).cuda(self.gpu)
-        sample_num = self.reduce_loss(total_num,self.world_size)
-        avg_loss ,avg_acc= torch.tensor(train_loss, dtype=torch.float32).cuda(self.gpu),torch.tensor(train_acc, dtype=torch.float32).cuda(self.gpu)
-        train_loss ,train_acc=  self.reduce_loss(avg_loss,self.world_size),self.reduce_loss(avg_acc,self.world_size)
         logging.info(
             f"Train | epoch:{epoch}, Sample # {sample_num} | train_loss {train_loss:.3f} | train_acc {train_acc:.2f} | "
             f"lr {self.optimizer.param_groups[0]['lr']:.6f} | "
@@ -619,7 +517,7 @@ class _Trainer():
         return ret_num_data, ret_corrects
 
     def reset_opt(self):
-        self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
+        self.optimizer = select_optimizer(self.opt_name, self.lr, self.custom_clip)
         self.scheduler = select_scheduler(self.sched_name, self.optimizer)
 
     def all_gather(self, item):

@@ -20,7 +20,7 @@ class ContinualCLIP(_Trainer):
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
-        self.model.update_class_names(self.exposed_classes_names)
+        self.custom_clip.update_class_names(self.exposed_classes_names)
 
         # # zero-shot, don't need to train
         # for j in range(len(labels)):
@@ -68,7 +68,7 @@ class ContinualCLIP(_Trainer):
         num_data_l = torch.zeros(self.n_classes)
         label, pred_list = [], []
 
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for i, data in enumerate(test_loader):
                 x, y = data
@@ -78,7 +78,7 @@ class ContinualCLIP(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 pred = torch.argmax(logit, dim=-1)
                 _, preds = logit.topk(self.topk, 1, True, True)
                 total_correct += torch.sum(preds == y.unsqueeze(1)).item()
@@ -110,11 +110,11 @@ class ContinualCLIP(_Trainer):
         num_data_l = torch.zeros(self.n_classes)
         label, pred_list = [], []
 
-        bk_class_names = self.model.current_class_names
-        self.model.current_class_names = []
-        self.model.update_class_names(classes_names)
+        bk_class_names = self.custom_clip.current_class_names
+        self.custom_clip.current_class_names = []
+        self.custom_clip.update_class_names(classes_names)
 
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for data in tqdm(test_loader):
                 x, y = data
@@ -122,7 +122,7 @@ class ContinualCLIP(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 pred = torch.argmax(logit, dim=-1)
                 _, preds = logit.topk(self.topk, 1, True, True)
                 total_correct += torch.sum(preds == y.unsqueeze(1)).item()
@@ -136,6 +136,6 @@ class ContinualCLIP(_Trainer):
                 pred_list += pred.tolist()
 
         total_acc = total_correct / total_num_data
-        self.model.current_class_names = bk_class_names
+        self.custom_clip.current_class_names = bk_class_names
 
         return total_acc

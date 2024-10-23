@@ -48,7 +48,7 @@ class CLIP_MVP(_Trainer):
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
-        self.model.set_exposed_classes(self.exposed_classes_names)
+        self.custom_clip.set_exposed_classes(self.exposed_classes_names)
 
         self.memory_sampler = MemoryBatchSampler(
             self.memory, self.memory_batchsize,
@@ -71,7 +71,7 @@ class CLIP_MVP(_Trainer):
         return _loss / _iter, _acc / _iter
 
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
 
         if self.visible_classes == 'batch':
@@ -103,13 +103,13 @@ class CLIP_MVP(_Trainer):
 
         self.optimizer.zero_grad()
 
-        text_tokens = self.model.labels_tokenize(train_class_name_list)
+        text_tokens = self.custom_clip.labels_tokenize(train_class_name_list)
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            image_feature, text_features, mask = self.model.forward_features(
+            image_feature, text_features, mask = self.custom_clip.forward_features(
                 x, text_tokens)
             mask = mask[:, y.unique(
             )] if self.visible_classes == 'batch' else mask
-            logit = self.model.forward_head(image_feature, text_features)
+            logit = self.custom_clip.forward_head(image_feature, text_features)
             if self.use_mask:
                 logit = logit * mask
             if self.visible_classes == 'batch':
@@ -137,7 +137,7 @@ class CLIP_MVP(_Trainer):
         num_data_l = torch.zeros(self.n_classes)
         label = []
         pred_list = []
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for i, data in enumerate(test_loader):
                 x, y = data
@@ -147,7 +147,7 @@ class CLIP_MVP(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 logit = logit + self.mask[:len(self.exposed_classes)]
                 loss = F.cross_entropy(logit, y)
                 pred = torch.argmax(logit, dim=-1)
@@ -187,16 +187,16 @@ class CLIP_MVP(_Trainer):
 
     def online_before_task(self, task_id):
         logger.info("Total parameters:\t{}".format(
-            sum(p.numel() for p in self.model.parameters())))
+            sum(p.numel() for p in self.custom_clip.parameters())))
         logger.info("Trainable parameters:\t{}".format(
-            sum(p.numel() for p in self.model.parameters()
+            sum(p.numel() for p in self.custom_clip.parameters()
                 if p.requires_grad)))
 
     def online_after_task(self, cur_iter):
         pass
 
     def reset_opt(self):
-        self.optimizer = select_optimizer(self.opt_name, self.lr, self.model,
+        self.optimizer = select_optimizer(self.opt_name, self.lr, self.custom_clip,
                                           True)
         self.scheduler = select_scheduler(self.sched_name, self.optimizer,
                                           self.lr_gamma)
@@ -206,7 +206,7 @@ class CLIP_MVP(_Trainer):
         i_feat = i_feat / i_feat.norm(dim=-1, keepdim=True)
         t_feat.requires_grad = True
         i_feat.requires_grad = True
-        logit_scale = self.model.backbone.logit_scale.clone().detach().exp()
+        logit_scale = self.custom_clip.backbone.logit_scale.clone().detach().exp()
         logit = logit_scale * i_feat @ t_feat.t()
 
         if self.use_mask:
@@ -262,10 +262,10 @@ class CLIP_MVP(_Trainer):
         )
 
         if self.use_afs:
-            logit = self.model.forward_head(
+            logit = self.custom_clip.forward_head(
                 image_feature / (cps_score.unsqueeze(1)), text_features)
         else:
-            logit = self.model.forward_head(image_feature, text_features)
+            logit = self.custom_clip.forward_head(image_feature, text_features)
         if self.use_mask:
             logit = logit * mask
         if self.visible_classes == 'batch':
@@ -277,7 +277,7 @@ class CLIP_MVP(_Trainer):
         if self.use_gsf:
             loss = (1 - self.alpha) * loss + self.alpha * (ign_score**
                                                            self.gamma) * loss
-        return loss.mean() + self.model.get_similarity_loss()
+        return loss.mean() + self.custom_clip.get_similarity_loss()
 
     def report_training(self, sample_num, train_loss, train_acc):
         print(
@@ -287,15 +287,15 @@ class CLIP_MVP(_Trainer):
             f"Num_Batch_Classes {len(self.batch_exposed_classes)} | "
             f"running_time {datetime.timedelta(seconds=int(time.time() - self.start_time))} | "
             f"ETA {datetime.timedelta(seconds=int((time.time() - self.start_time) * (self.total_samples-sample_num) / sample_num))} | "
-            f"N_Prompts {self.model.e_prompts.size(0)} | "
+            f"N_Prompts {self.custom_clip.e_prompts.size(0)} | "
             f"N_Exposed {len(self.exposed_classes)} | "
-            f"Counts {self.model.count.to(torch.int64).tolist()}")
+            f"Counts {self.custom_clip.count.to(torch.int64).tolist()}")
 
     def setup_distributed_model(self):
         super().setup_distributed_model()
-        self.model.use_mask = self.use_mask
-        self.model.use_contrastiv = self.use_contrastiv
-        self.model.use_last_layer = self.use_last_layer
+        self.custom_clip.use_mask = self.use_mask
+        self.custom_clip.use_contrastiv = self.use_contrastiv
+        self.custom_clip.use_last_layer = self.use_last_layer
 
     def add_new_batch_class(self, class_name):
         batch_exposed_classes = []

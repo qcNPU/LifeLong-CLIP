@@ -93,7 +93,7 @@ class CLIB(ER, ABC):
         pass
 
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
         x, y = data
         if len(self.memory) > 0 and self.memory_batchsize > 0:
@@ -128,7 +128,7 @@ class CLIB(ER, ABC):
     def update_schedule(self, reset=False):
         if self.sched_name == 'adaptive_lr':
             self.adaptive_lr(period=self.lr_period, min_iter=self.lr_length)
-            self.model.train()
+            self.custom_clip.train()
         else:
             super().update_schedule(reset)
 
@@ -198,12 +198,12 @@ class CLIB(ER, ABC):
         self.imp_update_counter += 1
         if self.imp_update_counter % self.imp_update_period == 0:
             if len(self.memory) > 0:
-                self.model.eval()
+                self.custom_clip.eval()
                 with torch.no_grad():
                     logit = []
                     label = []
                     for (x, y) in self.loss_update_dataloader:
-                        logit.append(self.model(x.to(self.device)) + self.mask)
+                        logit.append(self.custom_clip(x.to(self.device)) + self.mask)
                         label.append(y.to(self.device))
                     loss = F.cross_entropy(torch.cat(logit), torch.cat(label), reduction='none')
                     if self.distributed:
@@ -217,7 +217,7 @@ class CLIB(ER, ABC):
         self.imp_update_counter += 1
         if self.imp_update_counter % self.imp_update_period == 0:
             if len(self.memory) > 0:
-                self.model.eval()
+                self.custom_clip.eval()
                 with torch.no_grad():
 
                     memory_ordered_sampler = MemoryOrderedSampler(self.memory, self.memory_batchsize, self.temp_batchsize * self.online_iter * self.world_size)
@@ -227,7 +227,7 @@ class CLIB(ER, ABC):
                     # loss = []
                     with torch.cuda.amp.autocast(enabled=self.use_amp):
                         for (x, y) in memory_dataloader:
-                            logit.append(self.model(x.to(self.device)) + self.mask)
+                            logit.append(self.custom_clip(x.to(self.device)) + self.mask)
                             label.append(y.to(self.device))
                         logits = torch.cat(logit)
                         labels = torch.cat(label)

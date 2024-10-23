@@ -30,7 +30,7 @@ class MaPLe(_Trainer):
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
-        self.model.update_class_names(self.exposed_classes_names)
+        self.custom_clip.update_class_names(self.exposed_classes_names)
 
         self.memory_sampler = MemoryBatchSampler(
             self.memory, self.memory_batchsize,
@@ -54,7 +54,7 @@ class MaPLe(_Trainer):
         return _loss / _iter, _acc / _iter
 
     def online_train(self, data):
-        self.model.train()
+        self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
 
         if self.visible_classes == 'batch':
@@ -86,13 +86,13 @@ class MaPLe(_Trainer):
 
         x = self.train_transform(x)
 
-        tokenized_prompts, token_prefix, token_suffix = self.model.get_tokenized_prompts(
+        tokenized_prompts, token_prefix, token_suffix = self.custom_clip.get_tokenized_prompts(
             train_class_name_list)
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            logit = self.model(x, tokenized_prompts, token_prefix,
-                               token_suffix)
+            logit = self.custom_clip(x, tokenized_prompts, token_prefix,
+                                     token_suffix)
             loss = self.criterion(logit, y)
         _, preds = logit.topk(self.topk, 1, True, True)
 
@@ -114,7 +114,7 @@ class MaPLe(_Trainer):
             "Turning off gradients in both the image and the text encoder")
         name_to_update = "prompt_learner"
 
-        for name, param in self.model.named_parameters():
+        for name, param in self.custom_clip.named_parameters():
             if name_to_update not in name:
                 # Make sure that VPT prompts are updated
                 if "VPT" in name:
@@ -124,15 +124,15 @@ class MaPLe(_Trainer):
 
         # Double check
         enabled = set()
-        for name, param in self.model.named_parameters():
+        for name, param in self.custom_clip.named_parameters():
             if param.requires_grad:
                 enabled.add(name)
         logger.info(f"Parameters to be updated: {enabled}")
 
         logger.info("Total parameters:\t{}".format(
-            sum(p.numel() for p in self.model.parameters())))
+            sum(p.numel() for p in self.custom_clip.parameters())))
         logger.info("Trainable parameters:\t{}".format(
-            sum(p.numel() for p in self.model.parameters()
+            sum(p.numel() for p in self.custom_clip.parameters()
                 if p.requires_grad)))
 
         self.reset_opt()
@@ -146,9 +146,9 @@ class MaPLe(_Trainer):
         num_data_l = torch.zeros(self.n_classes)
         label, pred_list = [], []
 
-        tokenized_prompts, token_prefix, token_suffix = self.model.get_tokenized_prompts(
+        tokenized_prompts, token_prefix, token_suffix = self.custom_clip.get_tokenized_prompts(
             classes_names)
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for data in tqdm(test_loader):
                 x, y = data
@@ -156,8 +156,8 @@ class MaPLe(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x, tokenized_prompts, token_prefix,
-                                   token_suffix)
+                logit = self.custom_clip(x, tokenized_prompts, token_prefix,
+                                         token_suffix)
                 pred = torch.argmax(logit, dim=-1)
                 _, preds = logit.topk(self.topk, 1, True, True)
                 total_correct += torch.sum(preds == y.unsqueeze(1)).item()
@@ -177,7 +177,7 @@ class MaPLe(_Trainer):
         label = []
         pred_list = []
 
-        self.model.eval()
+        self.custom_clip.eval()
         with torch.no_grad():
             for i, data in enumerate(test_loader):
                 x, y = data
@@ -187,7 +187,7 @@ class MaPLe(_Trainer):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logit = self.model(x)
+                logit = self.custom_clip(x)
                 loss = self.criterion(logit, y)
                 pred = torch.argmax(logit, dim=-1)
                 _, preds = logit.topk(self.topk, 1, True, True)
@@ -264,7 +264,7 @@ class MaPLe(_Trainer):
             self.scheduler.step()
 
     def reset_opt(self):
-        self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
+        self.optimizer = select_optimizer(self.opt_name, self.lr, self.custom_clip)
         self.scheduler = select_scheduler(self.sched_name, self.optimizer,
                                           None)
 

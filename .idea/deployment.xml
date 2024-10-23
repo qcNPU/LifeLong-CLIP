@@ -6,7 +6,7 @@
       <paths name="2090_all">
         <serverdata>
           <mappings>
-            <mapping deploy="/home/qc/project" local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/home/qc/project" local="$PROJECT_DIR$/.." web="/" />
           </mappings>
         </serverdata>
       </paths>

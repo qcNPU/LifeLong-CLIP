@@ -5,7 +5,7 @@ import os
 
 from configuration import config
 from methods.adapter_clip import AdapterCLIP
-from methods.proto_clip import Proto_CLIP
+from methods.Trainer_ProtoCLIP import Trainer_ProtoCLIP
 from methods.clib import CLIB
 from methods.continual_clip import ContinualCLIP
 from methods.er_baseline import ER
@@ -34,7 +34,7 @@ methods = {
     "mvp-clip": CLIP_MVP,
     "maple": MaPLe,
     "adapter-clip": AdapterCLIP,
-    "adapter-clip-proto_prompt": Proto_CLIP,
+    "adapter-clip-proto_prompt": Trainer_ProtoCLIP,
     "lora-clip": AdapterCLIP
 }
 
@@ -70,7 +70,6 @@ def main():
     trainer = methods[args.method](**vars(args))
 
     trainer.run()
-
 
 if __name__ == "__main__":
     main()
