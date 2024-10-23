@@ -416,7 +416,7 @@ class Trainer_ProtoCLIP(_Trainer):
             if isprompt and ("text_key" in name or "text_prompt" in name):
                 param.requires_grad_(True)
             else:
-                if isboth and "model.transformer" in name:
+                if isboth and "adaptmlp" in name and "model.transformer" in name:
                     param.requires_grad_(True)
                 else:
                     param.requires_grad_(False)
@@ -455,11 +455,11 @@ class Trainer_ProtoCLIP(_Trainer):
             m = MultivariateNormal(cls_mean.float(), cls_cov.float())
             cls_normals[c_id] = m
 
+        num_sampled_pcls = self.num_sampled_pcls
         for epoch in range(run_epochs):
             losses = 0.
             sampled_data = []
             sampled_label = []
-            num_sampled_pcls = 16
 
             for c_id in range(crct_num):
                 # 采样特征

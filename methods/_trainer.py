@@ -88,6 +88,7 @@ class _Trainer():
         self.topK = kwargs.get("topK")
         self.text_template = kwargs.get("text_template")
         self.peft_encoder = kwargs.get("peft_encoder")
+        self.num_sampled_pcls = kwargs.get("num_sampled_pcls")
         self.wd = 0.0
         self.task_id = 0
         self.disjoint_classes = None
