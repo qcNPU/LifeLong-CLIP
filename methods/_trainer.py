@@ -371,7 +371,8 @@ class _Trainer():
         logging.info(f"A_avg {A_avg:.5f} | A_last {A_last:.5f} | F_last {F_last:.5f}")
         with open(os.path.join(self.log_dir, 'result.txt'), 'w') as f:
             f.write(f"Dataset:{self.dataset_name} | A_auc {A_auc:.5f} | A_avg {A_avg:.5f} | A_last {A_last:.5f} | F_last {F_last:.5f}\n")
-            f.write(f'task_acc:{task_records["task_acc"]}')
+            f.write(f'task_acc:{task_records["task_acc"]}\n')
+            f.write(f'per_task_acc:{task_records["cls_acc"]}')
 
         if self.zero_shot_evaluation:
             assert hasattr(self, 'offline_evaluate')
