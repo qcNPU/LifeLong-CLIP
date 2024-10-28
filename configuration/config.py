@@ -9,16 +9,18 @@ def base_parser():
     parser.add_argument("--method", type=str, default="adapter-clip-proto_prompt", choices=["adapter-clip","adapter-clip-proto_prompt",], help="Select CIL method",)
     parser.add_argument("--dataset", type=str, default="cifar100", help="[mnist, cifar10, cifar100, imagenet]",)
     parser.add_argument("--n_tasks", type=int, default=10, help="The number of tasks")
-    parser.add_argument("--epochNum", type=int, default=5, help="The number of tasks")
+    parser.add_argument("--epochNum", type=int, default=6, help="The number of tasks")
     parser.add_argument('--peft_encoder', type=str, default='both', choices=['both', 'text', 'image'], help='The encoder to inject LoRa/Adapter/Prompt')
     parser.add_argument("--lr", type=float, default=5e-4, help="learning rate")
     parser.add_argument("--model_name", type=str, default="/home/qc/pretrained_model/ViT-B-16.pt", help="Model name")
+    parser.add_argument("--batchsize", type=int, default=64, help="batch size")
+    parser.add_argument("--test_batchsize", type=int, default=16, help="batch size")
+    parser.add_argument("--num_sampled_pcls",type=int,default=64,help="The number of workers")
     parser.add_argument("--ca",type=bool,default=True,help="The number of workers")
     parser.add_argument("--ssca",type=bool,default=True,help="The number of workers")
     parser.add_argument("--ca_epochs",type=int,default=5,help="The number of workers")
     parser.add_argument("--feature_dim",type=int,default=512,help="The number of workers")
     parser.add_argument("--num_prompt",type=int,default=10,help="The number of workers")
-    parser.add_argument("--num_sampled_pcls",type=int,default=8,help="The number of workers")
     parser.add_argument("--n_ctx",type=int,default=12,help="The number of workers")
     parser.add_argument("--topK",type=int,default=2,help="The number of chosen prompt")
     parser.add_argument("--model_type",type=str,default="tune_prototype_prompt",choices=[],help="The number of workers")
@@ -38,7 +40,6 @@ def base_parser():
                         type=str,
                         default="default",
                         help="Scheduler name")
-    parser.add_argument("--batchsize", type=int, default=32, help="batch size")
 
     parser.add_argument("--n_worker",
                         type=int,

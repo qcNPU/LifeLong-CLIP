@@ -66,6 +66,7 @@ class _Trainer():
         self.opt_name = kwargs.get("opt_name")
         self.sched_name = kwargs.get("sched_name")
         self.batchsize = kwargs.get("batchsize")
+        self.test_batchsize = kwargs.get("test_batchsize")
         self.n_worker = kwargs.get("n_worker")
         self.lr = kwargs.get("lr")
         self.init_model = kwargs.get("init_model")
@@ -343,6 +344,7 @@ class _Trainer():
             # 6. test
             eval_dict = self.evalue_afterTrain(task_records,task_id)
             self._known_classes = self._total_classes
+            torch.cuda.empty_cache()
         self.save_result(task_records,eval_results,eval_dict)
 
     def save_result(self,task_records,eval_results,eval_dict):
@@ -421,11 +423,12 @@ class _Trainer():
         test_sampler = OnlineTestSampler(self.test_dataset,
                                          self.exposed_classes)
         test_dataloader = DataLoader(self.test_dataset,
-                                     batch_size=self.batchsize * 2,
+                                     batch_size=self.test_batchsize,
                                      sampler=test_sampler,
                                      num_workers=self.n_worker)
         eval_dict = self.online_evaluate(test_dataloader, 1000)
-
+        del test_sampler,test_dataloader
+        gc.collect()
         task_acc = eval_dict['avg_acc']
         # ! after training done
         self.report_test(1000, eval_dict["avg_loss"], task_acc)

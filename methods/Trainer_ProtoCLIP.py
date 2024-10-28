@@ -167,6 +167,8 @@ class Trainer_ProtoCLIP(_Trainer):
                 xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(y, pred)
                 correct_l += correct_xlabel_cnt
                 num_data_l += xlabel_cnt
+                del x,y
+                gc.collect()
                 # label += y.tolist()
                 # pred_list += pred.tolist()
 
@@ -177,14 +179,15 @@ class Trainer_ProtoCLIP(_Trainer):
         # 打印每个任务的正确率
         logging.info(f'task_acc:{task_acc}')
 
-        cm = confusion_matrix(label, pred_list)
+        # cm = confusion_matrix(label, pred_list)
 
         eval_dict = {
             "avg_loss": avg_loss,
             "avg_acc": avg_acc,
             "cls_acc": task_acc,
             "task_acc": task_acc,
-            "confusion_matrix": cm.tolist()
+            # "confusion_matrix": cm.tolist()
+            "confusion_matrix": []
         }
         return eval_dict
 
@@ -228,7 +231,7 @@ class Trainer_ProtoCLIP(_Trainer):
         self._compute_class_mean(check_diff=False, oracle=False, task_id=self.task_id)  # 平均耗时6min
 
         # 重新设置 prompt token 为所有 seen class
-        logging.info(f"after stage 1,known_classes:{self.classes[:self._total_classes]},known_classes_names:{self.all_classnames[:self._total_classes]}")
+        logging.info(f"after stage 1,total_classes_names:{self.all_classnames[:self._total_classes]}")
         if self.distributed:
             self.custom_clip.module.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
         else:
@@ -280,14 +283,13 @@ class Trainer_ProtoCLIP(_Trainer):
             self._class_covs = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))  # 10,768,768
 
         radius = []
+        logging.info(f"class mean  extract start")
         for class_idx in range(self._known_classes, self._total_classes):
             data, targets, idx_dataset = self.get_dataset_by_indices(np.arange(class_idx, class_idx + 1), source='train',
-                                                                 mode='test', ret_data=True)
+                                                                     mode='test', ret_data=True)
 
             idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,pin_memory=True)
-            logging.info(f"class {class_idx} dataset extract start")
             vectors, _ = self._extract_vectors(idx_loader)#主要耗时是在这里，每个class要花30s
-            logging.info(f"class {class_idx} dataset extract end")
 
             # vectors = np.concatenate([vectors_aug, vectors])
 
@@ -302,7 +304,7 @@ class Trainer_ProtoCLIP(_Trainer):
             self._class_covs[class_idx, ...] = class_cov
             del data, targets,idx_dataset
             gc.collect()
-
+        logging.info(f"class mean extract end")
         if task_id == 0:
             self.radius = np.sqrt(np.mean(radius))
             logging.info(f"radius mean:{self.radius}")
@@ -407,19 +409,19 @@ class Trainer_ProtoCLIP(_Trainer):
         return displacement
 
     def _stage2_compact_classifier(self, task_size, ca_epochs=5):
-        lr = self.lr
+        lr = 5e-3
         self.logit_norm = None
         model = self.custom_clip.module if self.distributed else self.custom_clip
         isprompt= 'prompt' in self.model_type
         isboth = self.peft_encoder == 'both'
         for name, param in model.named_parameters():
             if isprompt and ("text_key" in name or "text_prompt" in name):
-                param.requires_grad_(True)
+                param.requires_grad = True
             else:
                 if isboth and "adaptmlp" in name and "model.transformer" in name:
-                    param.requires_grad_(True)
+                    param.requires_grad = True
                 else:
-                    param.requires_grad_(False)
+                    param.requires_grad = False
         # double check
         enabled = set()
         for name, param in model.named_parameters():
@@ -428,7 +430,7 @@ class Trainer_ProtoCLIP(_Trainer):
         logging.info(f"Parameters to be updated: {sorted(enabled)}")
 
         run_epochs = ca_epochs
-        crct_num = self._known_classes
+        crct_num = self._total_classes
         param_list = [p for p in model.parameters() if p.requires_grad]
         network_params = [{'params': param_list, 'lr': lr,'weight_decay': self.wd}]
         # network_params = [{'params': param_list}]
@@ -437,10 +439,6 @@ class Trainer_ProtoCLIP(_Trainer):
         # scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[4], gamma=lrate_decay)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=run_epochs)
 
-        # self.model.to(self._device)
-        #
-        # if len(self._multiple_gpus) > 1:
-        #     self.model = nn.DataParallel(self.model, self._multiple_gpus)
         #即使在评估模式 (model.eval()) 下，你仍然可以进行参数训练和梯度更新。评估模式主要影响模型的行为，例如 Dropout 和 Batch Normalization 层的处理方式，但不会禁用梯度计算或优化步骤。
         self.custom_clip.eval()
 
@@ -455,7 +453,7 @@ class Trainer_ProtoCLIP(_Trainer):
             m = MultivariateNormal(cls_mean.float(), cls_cov.float())
             cls_normals[c_id] = m
 
-        num_sampled_pcls = self.num_sampled_pcls
+        sample_batch = 16
         for epoch in range(run_epochs):
             losses = 0.
             sampled_data = []
@@ -463,21 +461,21 @@ class Trainer_ProtoCLIP(_Trainer):
 
             for c_id in range(crct_num):
                 # 采样特征
-                sampled_data_single = cls_normals[c_id].sample(sample_shape=(num_sampled_pcls,))
+                sampled_data_single = cls_normals[c_id].sample(sample_shape=(self.num_sampled_pcls,))
                 sampled_data.append(sampled_data_single)#sampled_data_single：（8,768）
-                sampled_label.extend([c_id] * num_sampled_pcls)
+                sampled_label.extend([c_id] * self.num_sampled_pcls)
             # 使用采样特征再训练classifier
-            sampled_data = torch.cat(sampled_data, dim=0).to(torch.float32).cuda()#（160,768）
-            sampled_label = torch.tensor(sampled_label).long().cuda()
+            sampled_data = torch.cat(sampled_data, dim=0).to(torch.float32)#（160,768）
+            sampled_label = torch.tensor(sampled_label).long()
             inputs = sampled_data
             targets = sampled_label
             sf_indexes = torch.randperm(inputs.size(0))
             inputs = inputs[sf_indexes]
             targets = targets[sf_indexes]
 
-            for _iter in range(crct_num):
-                inp = inputs[_iter * num_sampled_pcls:(_iter + 1) * num_sampled_pcls]  # 64,768
-                tgt = targets[_iter * num_sampled_pcls:(_iter + 1) * num_sampled_pcls]
+            for _iter in range(inputs.size(0)//sample_batch):
+                inp = inputs[_iter * sample_batch:(_iter + 1) * sample_batch].cuda()  # 64,768
+                tgt = targets[_iter * sample_batch:(_iter + 1) * sample_batch].cuda()
                 # 有prototype而没有prompt，则第二阶段tune的是adapter本身——这个分支废弃，因为无法在第二阶段只tune adapter
                 if 'prompt' not in self.model_type and 'prototype' in self.model_type:
                     logits, _, _ = self.custom_clip(inp, image_is_feature=True)
@@ -515,6 +513,8 @@ class Trainer_ProtoCLIP(_Trainer):
             # test_acc = self._compute_accuracy(self.model, self.test_loader)
             print('CA Task {} => Loss {:.3f}'.format(
                 self.task_id, losses / self._total_classes))
+        del cls_normals
+        gc.collect()
         logging.info("stage2 tune prompt finishied")
 
 
@@ -605,22 +605,23 @@ class Trainer_ProtoCLIP(_Trainer):
                                           None)
 
     def add_new_batch_class(self, class_name):
-        batch_exposed_classes = []
-        for label in class_name:
-            if label.item() not in self.batch_exposed_classes:
-                self.batch_exposed_classes.append(label.item())
+        self.batch_exposed_classes = class_name.unique().numpy().tolist()
+        # for label in class_name:
+        #     if label.item() not in self.batch_exposed_classes:
+        #         self.batch_exposed_classes.append(label.item())
         self.batch_exposed_classes_names = [
             self.train_dataset.classes_names[i]
             for i in self.batch_exposed_classes
         ]
+        # print(f"**{self.batch_exposed_classes_names}")
 
     def add_new_class(self, class_name):
         _old_num = len(self.exposed_classes)
         super().add_new_class(class_name)#将这批数据的新class加入到exposed_class变量中
 
-        self.batch_exposed_classes = []
-        self.batch_exposed_classes_names = []
-        if self.memory_size > 0:
+        # self.batch_exposed_classes = []
+        # self.batch_exposed_classes_names = []
+        if self.memory_size > 0:#0
             self.batch_exposed_classes = self.exposed_classes
             self.batch_exposed_classes_names = self.exposed_classes_names
         else:
