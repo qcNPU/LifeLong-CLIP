@@ -14,6 +14,7 @@ from torch.distributions.multivariate_normal import MultivariateNormal
 
 class CUSTOM_CLIP(AdapterCLIP):
     def __init__(self ,args,device):
+        self.n_class = None
         self.args = args
         super(CUSTOM_CLIP, self).__init__(model_name = args.model_name, device=device,
                            peft_method='adapter',
@@ -32,6 +33,8 @@ class CUSTOM_CLIP(AdapterCLIP):
         if 'prompt' in self.args.model_type:
             # ctx_dim = clip_model.ln_final.weight.shape[0]
             ctx_dim = self.feature_dim
+            # init_temp = 'a photo of a '
+            # init_emb = self.text_encoder(self.tokenize(init_temp),None,True)
             text_key = torch.empty(self.num_prompt, ctx_dim, dtype=self.dtype)
             nn.init.normal_(text_key, std=0.02)
             text_prompt = torch.empty(self.num_prompt, self.n_ctx, ctx_dim, dtype=self.dtype)
@@ -65,54 +68,27 @@ class CUSTOM_CLIP(AdapterCLIP):
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             #使用 .detach() 会返回一个新的张量，这个张量与原始张量共享数据，但不会参与梯度计算。调用 .item() 或 .numpy() 会从张量中提取数据，这些数据不再与计算图关联。
         batch = image_features.shape[0]
-        if test:
-            if 'prompt' in self.args.model_type:
-                probability = image_features @ self.text_key.t()
-                _, indices = probability.topk(k=min(self.args.topK, probability.shape[1]), dim=1, largest=True)
-                ctx = self.text_prompt[indices].view(batch, self.n_ctx * self.args.topK, self.feature_dim).cuda()
-                text_prompt, tokenized_prompts = self.prompt_learner(ctx, test)
-                text_features = self.text_encoder(text_prompt, tokenized_prompts)
-                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-                text_features = text_features.view(image_features.shape[0], self.n_class, -1)
-                image_features = image_features.unsqueeze(1)
-                logit_scale = self.logit_scale.exp()
-                logits = logit_scale * (image_features * text_features).sum(-1)
-            else:
-                with torch.no_grad():
-                    text_token =self.labels_tokenize([self.args.text_template.format(c) for c in self.train_cls_name])
-                    text_features = self.text_encoder(text=text_token,need_token=True )
-                    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-                logit_scale = self.logit_scale.exp()
-                #logits_per_image
-                logits = logit_scale * (image_features @ text_features.T)
-
-            return logits,None,None
-
+        if 'prompt' in self.args.model_type:  # image encoder中有adapter，text端输入为text prompt
+            probability = image_features @ self.text_key.t()
+            _, indices = probability.topk(k=min(self.args.topK, probability.shape[1]), dim=1, largest=True)
+            key_choose = self.text_key[indices]
+            ctx = self.text_prompt[indices].view(batch, self.n_ctx * self.args.topK, self.feature_dim).cuda()
+            text_prompt, tokenized_prompts,_,_ = self.prompt_learner(ctx, test)
+            text_features = self.text_encoder(text=text_prompt,tokenized_prompts = tokenized_prompts)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+            text_features = text_features.view(image_features.shape[0], self.n_class, -1)
+            image_features = image_features.unsqueeze(1)
+            logit_scale = self.logit_scale.exp()
+            logits = logit_scale * (image_features * text_features).sum(-1)
         else:
-            if 'prompt' in self.args.model_type:  # image encoder中有adapter，text端输入为text prompt
-                probability = image_features @ self.text_key.t()
-                _, indices = probability.topk(k=min(self.args.topK, probability.shape[1]), dim=1, largest=True)
-                key_choose = self.text_key[indices]
-                ctx = self.text_prompt[indices].view(batch, self.n_ctx * self.args.topK, self.feature_dim).cuda()
-                text_prompt, tokenized_prompts,_,_ = self.prompt_learner(ctx, test)
-                text_features = self.text_encoder(text=text_prompt,tokenized_prompts = tokenized_prompts)
+            with torch.no_grad():
+                text_token =self.labels_tokenize([self.args.text_template.format(c) for c in self.train_cls_name])
+                text_features = self.text_encoder(text=text_token, need_token=True)
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-                text_features = text_features.view(image_features.shape[0], self.n_class, -1)
-                image_features = image_features.unsqueeze(1)
-                # torch.cuda.empty_cache()
-                logit_scale = self.logit_scale.exp()
-                logits = logit_scale * (image_features * text_features).sum(-1)
-            else:
-                with torch.no_grad():
-                    text_token =self.labels_tokenize([self.args.text_template.format(c) for c in self.train_cls_name])
-                    text_features = self.text_encoder(text=text_token, need_token=True)
-                    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-                logit_scale = self.logit_scale.exp()
-                logits = logit_scale * (image_features @ text_features.T)# logits_per_image
-            loss_m = None#这个变量也要放到cuda上
-            key_choose=None
+            logit_scale = self.logit_scale.exp()
+            logits = logit_scale * (image_features @ text_features.T)# logits_per_image
 
-            return logits,None,None
+        return logits,None,None
 
     def update_class_names(self, new_class_names):
         _num = 0
@@ -196,7 +172,7 @@ class PromptLearner(nn.Module):
         # self.prompts = prompts
         # self.prompts_token = tokenized_prompts
         if infer:
-            return prompts, tokenized_prompts
+            return prompts, tokenized_prompts,None,None
         else:
             # nc_prompts, nc_tokenized_prompts = self.only_prefix()
             return prompts, tokenized_prompts, None, None
@@ -222,6 +198,7 @@ class TextEncoder(nn.Module):
         self.dtype = clip_model.dtype
 
     def forward(self, text, tokenized_prompts=None, need_token=False):
+        # need_token为true，代表已tokenize过，所以需要token_embedding，argmax使用text变量；为false，代表已tokenize+token_embedding过，argmax要使用tokenized_prompts
         x = self.token_embedding(text).type(self.dtype) if need_token else text
         x = x + self.positional_embedding.type(self.dtype)
         x = x.permute(1, 0, 2)
@@ -231,6 +208,7 @@ class TextEncoder(nn.Module):
         x = x[torch.arange(x.shape[0]), (text if need_token else tokenized_prompts).argmax(
             dim=-1)] @ self.text_projection
         return x
+
 
 
 

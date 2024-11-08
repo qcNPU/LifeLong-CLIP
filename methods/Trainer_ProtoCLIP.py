@@ -23,6 +23,8 @@ from torch.utils.data import DataLoader
 from methods._trainer import _Trainer
 from utils.train_utils import select_optimizer, select_scheduler
 from utils.memory import MemoryBatchSampler
+from datasets.gpt.gpt_generation import attributes
+from sklearn.cluster import KMeans
 
 logger = logging.getLogger()
 
@@ -31,9 +33,23 @@ class Trainer_ProtoCLIP(_Trainer):
 
     def __init__(self, **kwargs):
         super(Trainer_ProtoCLIP, self).__init__(**kwargs)
+        self.overall_key_counts = None
+        self.key_statis = None
+        self.cls_en_map = None
+        self.cluster_info = None
         self.batch_exposed_classes = []
         self.batch_exposed_classes_names = []
         self.visible_classes = self.args.get('visible_classes', 'batch')
+
+    def setup_dataset(self):
+        super().setup_dataset()
+        # 获取数据集所有class name的Attribute的word embedding
+        cls_en_map = self.getTaskAttributeEmbedding(args=self.args, class_names=self.all_classnames,
+                                                    clip_model=self.custom_clip.module, text_encoder=self.custom_clip.module.text_encoder)
+        # self.custom_clip.module.init_cls_map(cls_en_map)
+        self.cls_en_map = cls_en_map
+        self.cluster_info = self.cluster_attributes(cls_en_map)
+
 
     def online_before_task(self, task_id):
         #这里传custom_clip.module和custom_clip是一样的，会自动选择到module里的参数
@@ -112,11 +128,10 @@ class Trainer_ProtoCLIP(_Trainer):
 
         x = self.train_transform(x)
         # 只用当前batch的classname来做train
-        self.custom_clip.module.set_prompt_token_by_clsname(classnames=train_class_name_list)
-        # if self.distributed:
-        #     result = self.set_prompt_token_by_clsname(train_class_name_list,self.custom_clip.module)
-        # else:
-        #     self.custom_clip.set_prompt_token_by_clsname(train_class_name_list)
+        if self.distributed:
+            self.custom_clip.module.set_prompt_token_by_clsname(classnames=train_class_name_list)
+        else:
+            self.custom_clip.set_prompt_token_by_clsname(classnames=train_class_name_list)
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
@@ -312,6 +327,67 @@ class Trainer_ProtoCLIP(_Trainer):
         logging.info("_compute_class_mean finished")
 
         # self._class_covs.append(class_cov)
+
+    def getTaskAttributeEmbedding(self,args, class_names, clip_model, text_encoder):
+        # cls_str_map = getTaskEntitys(args, class_names)
+        cls_str_map = self.getTaskAttributes(args, class_names)
+        cls_embe_map = {}
+        with torch.no_grad():
+            for index, attrs in cls_str_map.items():
+                # 遇到DataParallel’ object has no attribute ‘xxxx’时，在model后面加上.module.
+                tokenized_keys = torch.cat([self.custom_clip.module.tokenize(p) for p in attrs]).cuda()  # （298,77）
+                entity_embeddings = text_encoder(text = tokenized_keys, tokenized_prompts = None, need_token = True)
+                # entity_embeddings,_ = entity_embeddings.max(dim=1)
+                entity_embeddings /= entity_embeddings.norm(dim=-1, keepdim=True)  # 归一化（298,768）
+                cls_embe_map[index] = entity_embeddings
+
+        return [cls_str_map, cls_embe_map]
+
+    def getTaskAttributes(self,args, train_classnames):
+        # 取出task中所有class的entity和attribute，合并去重
+        class_attributes = attributes.get_Classes_Attributes(args, train_classnames)
+        classMap = {}
+        for i, info in enumerate(class_attributes):
+            attrs = list()
+            for j in info:
+                a1 = [s for s in j.split("|") if s.strip() != '']
+                attrs.extend(a1)
+            classMap[i] = attrs
+        return classMap
+
+    def init_cls_map(self, cls_en_map):
+        self.cls_en_map = cls_en_map
+        self.cluster_info = self.cluster_attributes(cls_en_map)
+        self.key_statis = {i: {j: 0 for j in range(10)} for i in range(self.args.class_per_task * (self.args.sess + 1))}
+        self.overall_key_counts = {cls: {i: 0 for i in range(self.args.num_prompt)} for cls in range(100)}
+
+    def cluster_attributes(self,cls_en_map):
+        num_clusters = 3
+        max_iterations = 100
+        cluster_embs = []
+        cluster_strs = []
+        tolerance = 1e-4
+        for ind, emb in cls_en_map[1].items():
+            # 使用 kmeans-pytorch 进行 K-means 聚类
+            # cluster_ids_x, cluster_centers = kmeans(
+            #     X=emb, num_clusters=num_clusters, distance='cosine', device=torch.device('cuda')
+            # )
+
+            kmeans = KMeans(n_clusters=num_clusters, max_iter=max_iterations, n_init=10, tol=tolerance, random_state=42)
+            kmeans.fit(emb.numpy())  # 使用 numpy 数据
+
+            # 获取聚类分配结果
+            cluster_ids_x = kmeans.labels_
+            # 根据聚类分配结果将样本分到不同的组
+            embs = [[] for _ in range(num_clusters)]
+            strs = [[] for _ in range(num_clusters)]
+            for i, cluster_id in enumerate(cluster_ids_x):
+                embs[cluster_id].append(emb[i])
+                strs[cluster_id].append(cls_en_map[0][ind][i])
+            cluster_embs.append(embs)
+            cluster_strs.append(strs)
+
+        return [cluster_strs, cluster_embs]
 
     def get_dataset_by_indices(
             self, indices, source, mode, appendent=None, ret_data=False, m_rate=None

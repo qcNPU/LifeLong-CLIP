@@ -199,10 +199,12 @@ class _Trainer():
                                          download=True,
                                          transform=self.test_transform)
         self.n_classes = len(self.train_dataset.classes)
-
+        self.all_classnames = self.train_dataset.class_names
+        self.classes = self.train_dataset.classes
         self.exposed_classes = []
         self.exposed_classes_names = []
         self.seen = 0
+
 
     def setup_transforms(self):
         train_transform = []
@@ -278,6 +280,7 @@ class _Trainer():
         self.dtype = self.custom_clip.dtype
 
         self.setup_transforms()
+        # 获取Attribute、cluster都在这里
         self.setup_dataset()
         self.setup_distributed_model()
         self.memory = Memory()
@@ -288,8 +291,7 @@ class _Trainer():
                                            n=self.n, rnd_seed=self.rnd_seed, varing_NM=self.rnd_NM)
         self.disjoint_classes = self.train_sampler.disjoint_classes
         self.disjoint_class_names = self.train_sampler.disjoint_class_names
-        self.all_classnames = self.train_sampler.class_names
-        self.classes = self.train_sampler.classes
+
         self.disjoint_class_num = self.train_sampler.disjoint_class_num
         self.train_dataloader = DataLoader(train_dataset,
                                            batch_size=self.batchsize,
@@ -310,6 +312,7 @@ class _Trainer():
 
 
         num_eval = self.eval_period
+
 
         for task_id in range(self.n_tasks):
             self.task_id = task_id

@@ -13,7 +13,7 @@ def base_parser():
     parser.add_argument('--peft_encoder', type=str, default='both', choices=['both', 'text', 'image'], help='The encoder to inject LoRa/Adapter/Prompt')
     parser.add_argument("--lr", type=float, default=5e-4, help="learning rate")
     parser.add_argument("--model_name", type=str, default="/home/qc/pretrained_model/ViT-B-16.pt", help="Model name")
-    parser.add_argument("--batchsize", type=int, default=64, help="batch size")
+    parser.add_argument("--batchsize", type=int, default=32, help="batch size")
     parser.add_argument("--test_batchsize", type=int, default=16, help="batch size")
     parser.add_argument("--num_sampled_pcls",type=int,default=64,help="The number of workers")
     parser.add_argument("--ca",type=bool,default=True,help="The number of workers")
