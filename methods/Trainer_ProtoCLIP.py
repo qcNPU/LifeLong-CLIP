@@ -11,7 +11,7 @@ from sklearn.metrics import confusion_matrix
 from torch import optim
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.nn import functional as F
-from torch.utils.data import Dataset,DataLoader, DistributedSampler
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from PIL import Image
 
 import torch
@@ -45,14 +45,14 @@ class Trainer_ProtoCLIP(_Trainer):
         super().setup_dataset()
         # 获取数据集所有class name的Attribute的word embedding
         cls_en_map = self.getTaskAttributeEmbedding(args=self.args, class_names=self.all_classnames,
-                                                    clip_model=self.custom_clip.module, text_encoder=self.custom_clip.module.text_encoder)
+                                                    clip_model=self.custom_clip.module,
+                                                    text_encoder=self.custom_clip.module.text_encoder)
         # self.custom_clip.module.init_cls_map(cls_en_map)
         self.cls_en_map = cls_en_map
         self.cluster_info = self.cluster_attributes(cls_en_map)
 
-
     def online_before_task(self, task_id):
-        #这里传custom_clip.module和custom_clip是一样的，会自动选择到module里的参数
+        # 这里传custom_clip.module和custom_clip是一样的，会自动选择到module里的参数
         if self.distributed:
             model = self.custom_clip.module
         else:
@@ -77,9 +77,10 @@ class Trainer_ProtoCLIP(_Trainer):
         self.compute_old_embedding()
 
     def online_step(self, images, labels, idx):
-        self.add_new_class(labels)#将新出现的classname加入到self.exposed_class和_names变量中
+        self.add_new_class(labels)  # 将新出现的classname加入到self.exposed_class和_names变量中
         if self.distributed:
-            self.custom_clip.module.update_class_names(self.exposed_classes_names)#将新出现的classname加入到self.current_class_names变量中
+            self.custom_clip.module.update_class_names(
+                self.exposed_classes_names)  # 将新出现的classname加入到self.current_class_names变量中
         else:
             self.custom_clip.update_class_names(self.exposed_classes_names)
 
@@ -96,7 +97,7 @@ class Trainer_ProtoCLIP(_Trainer):
         self.custom_clip.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
 
-        if self.visible_classes == 'batch':#这个
+        if self.visible_classes == 'batch':  # 这个
             # batch
             train_class_list = self.batch_exposed_classes
             train_class_name_list = self.batch_exposed_classes_names
@@ -114,12 +115,9 @@ class Trainer_ProtoCLIP(_Trainer):
                 if i not in train_class_list:
                     train_class_list.append(i)
                     train_class_name_list.append(self.exposed_classes_names[
-                        self.exposed_classes.index(i)])
+                                                     self.exposed_classes.index(i)])
             x = torch.cat([x, memory_images], dim=0)
             y = torch.cat([y, memory_labels], dim=0)
-
-        for j in range(len(y)):#只用batch class做训练
-            y[j] = train_class_list.index(y[j].item())
 
         # x = x.to(self.device)
         # y = y.to(self.device)
@@ -135,7 +133,10 @@ class Trainer_ProtoCLIP(_Trainer):
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            logit, image_features, text_features = self.custom_clip(image=x)
+            logit, image_features, text_features = self.custom_clip(image=x, labels=y)
+            # 只用batch class做CE
+            for j in range(len(y)):
+                y[j] = train_class_list.index(y[j].item())
             loss = self.criterion(logit, y)
         _, preds = logit.topk(self.topk, 1, True, True)
 
@@ -182,7 +183,7 @@ class Trainer_ProtoCLIP(_Trainer):
                 xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(y, pred)
                 correct_l += correct_xlabel_cnt
                 num_data_l += xlabel_cnt
-                del x,y
+                del x, y
                 gc.collect()
                 # label += y.tolist()
                 # pred_list += pred.tolist()
@@ -206,18 +207,14 @@ class Trainer_ProtoCLIP(_Trainer):
         }
         return eval_dict
 
-
-    def extract_vector(self,image):
+    def extract_vector(self, image):
         if self.distributed:
-            image_features = self.custom_clip.module.encode_image(image)#image:(32,3,32,32)
+            image_features = self.custom_clip.module.encode_image(image)  # image:(32,3,32,32)
         else:
-            image_features = self.custom_clip.encode_image(image)#image:(32,3,32,32)
+            image_features = self.custom_clip.encode_image(image)  # image:(32,3,32,32)
         # image_features = self.model(image,encode_image=True)  # image:(32,3,32,32)
         # image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         return image_features
-
-
-
 
     def compute_old_embedding(self):
         # 1. 在新task训练之前，用旧model提取新数据的embedding old
@@ -225,9 +222,6 @@ class Trainer_ProtoCLIP(_Trainer):
             logging.info("extract by old model start")
             self.train_embeddings_old, _ = self.extract_features(self.train_dataloader, self.custom_clip, None)
             logging.info("extract by old model end")
-
-
-
 
     def stage1_and_stage2(self):
         # 2. 在新task训练之后，用新model提取新数据的embedding new
@@ -256,15 +250,13 @@ class Trainer_ProtoCLIP(_Trainer):
             torch.cuda.empty_cache()
             self._stage2_compact_classifier(self.train_sampler.disjoint_class_num[self.task_id], self.ca_epochs)
 
-
-
     def extract_features(self, trainloader, model, args):
         model = model.eval()
         embedding_list = []
         label_list = []
         with torch.no_grad():
             for i, batch in enumerate(trainloader):
-                (data, label, idx)= batch
+                (data, label, idx) = batch
                 # data = data.cuda()
                 # label = label.cuda()
                 data = data.cuda()
@@ -278,7 +270,7 @@ class Trainer_ProtoCLIP(_Trainer):
         label_list = torch.cat(label_list, dim=0)
         return embedding_list, label_list
 
-    def _compute_class_mean(self, check_diff=False, oracle=False,task_id=None):
+    def _compute_class_mean(self, check_diff=False, oracle=False, task_id=None):
         """
         计算当前task的class的prototype，append到所有class的prototype的list中，由 range(self._known_classes, self._total_classes)控制
         """
@@ -300,11 +292,13 @@ class Trainer_ProtoCLIP(_Trainer):
         radius = []
         logging.info(f"class mean  extract start")
         for class_idx in range(self._known_classes, self._total_classes):
-            data, targets, idx_dataset = self.get_dataset_by_indices(np.arange(class_idx, class_idx + 1), source='train',
+            data, targets, idx_dataset = self.get_dataset_by_indices(np.arange(class_idx, class_idx + 1),
+                                                                     source='train',
                                                                      mode='test', ret_data=True)
 
-            idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,pin_memory=True)
-            vectors, _ = self._extract_vectors(idx_loader)#主要耗时是在这里，每个class要花30s
+            idx_loader = DataLoader(idx_dataset, batch_size=self.batchsize, shuffle=False, num_workers=4,
+                                    pin_memory=True)
+            vectors, _ = self._extract_vectors(idx_loader)  # 主要耗时是在这里，每个class要花30s
 
             # vectors = np.concatenate([vectors_aug, vectors])
 
@@ -317,7 +311,7 @@ class Trainer_ProtoCLIP(_Trainer):
 
             self._class_means[class_idx, :] = class_mean
             self._class_covs[class_idx, ...] = class_cov
-            del data, targets,idx_dataset
+            del data, targets, idx_dataset
             gc.collect()
         logging.info(f"class mean extract end")
         if task_id == 0:
@@ -328,22 +322,25 @@ class Trainer_ProtoCLIP(_Trainer):
 
         # self._class_covs.append(class_cov)
 
-    def getTaskAttributeEmbedding(self,args, class_names, clip_model, text_encoder):
+    def getTaskAttributeEmbedding(self, args, class_names, clip_model, text_encoder):
         # cls_str_map = getTaskEntitys(args, class_names)
         cls_str_map = self.getTaskAttributes(args, class_names)
-        cls_embe_map = {}
+        attr_token_map = {}
+        attr_fea_map = {}
         with torch.no_grad():
             for index, attrs in cls_str_map.items():
                 # 遇到DataParallel’ object has no attribute ‘xxxx’时，在model后面加上.module.
                 tokenized_keys = torch.cat([self.custom_clip.module.tokenize(p) for p in attrs]).cuda()  # （298,77）
-                entity_embeddings = text_encoder(text = tokenized_keys, tokenized_prompts = None, need_token = True)
+                attr_token = self.custom_clip.module.token_embedding(tokenized_keys)
+                attr_token_map[index] = attr_token
+                attr_fea = text_encoder(text=attr_token, tokenized_prompts=None, need_token=False)
                 # entity_embeddings,_ = entity_embeddings.max(dim=1)
-                entity_embeddings /= entity_embeddings.norm(dim=-1, keepdim=True)  # 归一化（298,768）
-                cls_embe_map[index] = entity_embeddings
+                attr_fea /= attr_fea.norm(dim=-1, keepdim=True)  # 归一化（298,768）
+                attr_fea_map[index] = attr_fea
 
-        return [cls_str_map, cls_embe_map]
+        return [cls_str_map, attr_token_map, attr_fea_map]
 
-    def getTaskAttributes(self,args, train_classnames):
+    def getTaskAttributes(self, args, train_classnames):
         # 取出task中所有class的entity和attribute，合并去重
         class_attributes = attributes.get_Classes_Attributes(args, train_classnames)
         classMap = {}
@@ -355,51 +352,87 @@ class Trainer_ProtoCLIP(_Trainer):
             classMap[i] = attrs
         return classMap
 
-    def init_cls_map(self, cls_en_map):
-        self.cls_en_map = cls_en_map
-        self.cluster_info = self.cluster_attributes(cls_en_map)
-        self.key_statis = {i: {j: 0 for j in range(10)} for i in range(self.args.class_per_task * (self.args.sess + 1))}
-        self.overall_key_counts = {cls: {i: 0 for i in range(self.args.num_prompt)} for cls in range(100)}
+    # def init_cls_map(self, cls_en_map):
+    #     self.cls_en_map = cls_en_map
+    #     self.cluster_info = self.cluster_attributes(cls_en_map)
+    #     self.key_statis = {i: {j: 0 for j in range(10)} for i in range(self.args.class_per_task * (self.args.sess + 1))}
+    #     self.overall_key_counts = {cls: {i: 0 for i in range(self.args.num_prompt)} for cls in range(100)}
 
-    def cluster_attributes(self,cls_en_map):
+    def cluster_attributes(self, cls_en_map):
         num_clusters = 3
         max_iterations = 100
-        cluster_embs = []
+        cluster_features = {}
         cluster_strs = []
+        cluster_tokens = []
         tolerance = 1e-4
-        for ind, emb in cls_en_map[1].items():
+        for ind, emb in cls_en_map[2].items():
             # 使用 kmeans-pytorch 进行 K-means 聚类
             # cluster_ids_x, cluster_centers = kmeans(
             #     X=emb, num_clusters=num_clusters, distance='cosine', device=torch.device('cuda')
             # )
 
             kmeans = KMeans(n_clusters=num_clusters, max_iter=max_iterations, n_init=10, tol=tolerance, random_state=42)
-            kmeans.fit(emb.numpy())  # 使用 numpy 数据
+            kmeans.fit(emb.cpu().numpy())  # 使用 numpy 数据
 
             # 获取聚类分配结果
             cluster_ids_x = kmeans.labels_
             # 根据聚类分配结果将样本分到不同的组
-            embs = [[] for _ in range(num_clusters)]
+            features = [[] for _ in range(num_clusters)]
             strs = [[] for _ in range(num_clusters)]
-            for i, cluster_id in enumerate(cluster_ids_x):
-                embs[cluster_id].append(emb[i])
+            tokens = [[] for _ in range(num_clusters)]
+            for i, cluster_id in enumerate(cluster_ids_x):  # i是索引，cluster_id是它属于哪个簇
+                features[cluster_id].append(emb[i])
                 strs[cluster_id].append(cls_en_map[0][ind][i])
-            cluster_embs.append(embs)
-            cluster_strs.append(strs)
+                tokens[cluster_id].append(cls_en_map[1][ind][i])
+            cluster_features[ind] = features
+            # cluster_strs.append(strs)
+            # cluster_tokens.append(strs)
 
-        return [cluster_strs, cluster_embs]
+        return [cluster_strs, cluster_tokens, cluster_features]
+
+    def image_display(images, attributes, prefix, grid_size=(3, 3)):
+        """
+        显示图片网格及其对应的 Attribute 字符串
+
+        :param images: 图片的张量列表
+        :param attributes: 图片对应的 Attribute 字符串列表
+        :param grid_size: 网格的行列数 (rows, cols)
+        """
+        nrow = 4
+        # 将张量转换为 numpy 数组并归一化到 [0, 1]
+        image_np = (images - images.min()) / (images.max() - images.min())
+        num_images = len(images)
+        ncol = (num_images + nrow - 1) // nrow
+        fig, axes = plt.subplots(ncol, nrow, figsize=(32, 22))
+
+        for i in range(num_images):
+            row = i // nrow
+            col = i % nrow
+            ax = axes[row, col]
+            img = image_np[i].permute(1, 2, 0).cpu().numpy()
+            ax.imshow(img)
+            ax.set_title("\n".join(attributes[i]), fontsize=20)
+            ax.axis('off')
+
+        # Hide any unused subplots
+        for i in range(num_images, ncol * nrow):
+            fig.delaxes(axes.flat[i])
+
+        plt.subplots_adjust(wspace=0.4, hspace=0.8)
+        fig.savefig(f"{prefix}.png")
+        plt.close(fig)
 
     def get_dataset_by_indices(
             self, indices, source, mode, appendent=None, ret_data=False, m_rate=None
     ):
         if source == "train":
             x, y = self.train_dataset.data, np.array(
-            self.train_dataset.targets
-        )
+                self.train_dataset.targets
+            )
         elif source == "test":
             x, y = self.test_dataset.data, np.array(
-            self.test_dataset.targets
-        )
+                self.test_dataset.targets
+            )
         else:
             raise ValueError("Unknown data source {}.".format(source))
 
@@ -436,8 +469,6 @@ class Trainer_ProtoCLIP(_Trainer):
         else:
             return DummyDataset(data, targets, trsf)
 
-
-
     def _select(self, x, y, low_range, high_range):
         idxes = np.where(np.logical_and(y >= low_range, y < high_range))[0]
         return x[idxes], y[idxes]
@@ -454,7 +485,6 @@ class Trainer_ProtoCLIP(_Trainer):
         else:
             new_idxes = np.where(np.logical_and(y >= low_range, y < high_range))[0]
         return x[new_idxes], y[new_idxes]
-
 
     def _extract_vectors(self, loader):
         self.custom_clip.eval()
@@ -488,7 +518,7 @@ class Trainer_ProtoCLIP(_Trainer):
         lr = 5e-3
         self.logit_norm = None
         model = self.custom_clip.module if self.distributed else self.custom_clip
-        isprompt= 'prompt' in self.model_type
+        isprompt = 'prompt' in self.model_type
         isboth = self.peft_encoder == 'both'
         for name, param in model.named_parameters():
             if isprompt and ("text_key" in name or "text_prompt" in name):
@@ -508,14 +538,14 @@ class Trainer_ProtoCLIP(_Trainer):
         run_epochs = ca_epochs
         crct_num = self._total_classes
         param_list = [p for p in model.parameters() if p.requires_grad]
-        network_params = [{'params': param_list, 'lr': lr,'weight_decay': self.wd}]
+        network_params = [{'params': param_list, 'lr': lr, 'weight_decay': self.wd}]
         # network_params = [{'params': param_list}]
 
         optimizer = optim.SGD(network_params, lr=lr, momentum=0.9, weight_decay=self.wd)
         # scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[4], gamma=lrate_decay)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=run_epochs)
 
-        #即使在评估模式 (model.eval()) 下，你仍然可以进行参数训练和梯度更新。评估模式主要影响模型的行为，例如 Dropout 和 Batch Normalization 层的处理方式，但不会禁用梯度计算或优化步骤。
+        # 即使在评估模式 (model.eval()) 下，你仍然可以进行参数训练和梯度更新。评估模式主要影响模型的行为，例如 Dropout 和 Batch Normalization 层的处理方式，但不会禁用梯度计算或优化步骤。
         self.custom_clip.eval()
 
         cls_normals = {}
@@ -523,7 +553,8 @@ class Trainer_ProtoCLIP(_Trainer):
             t_id = c_id // task_size
             decay = (t_id + 1) / (self.task_id + 1) * 0.1
             # 取出class对应的prototype
-            cls_mean = torch.tensor(self._class_means[c_id], dtype=torch.float64) * (0.9 + decay)  # torch.from_numpy(self._class_means[c_id]).to(self._device)
+            cls_mean = torch.tensor(self._class_means[c_id], dtype=torch.float64) * (
+                    0.9 + decay)  # torch.from_numpy(self._class_means[c_id]).to(self._device)
             cls_cov = self._class_covs[c_id]
             # 形成正态分布
             m = MultivariateNormal(cls_mean.float(), cls_cov.float())
@@ -538,10 +569,10 @@ class Trainer_ProtoCLIP(_Trainer):
             for c_id in range(crct_num):
                 # 采样特征
                 sampled_data_single = cls_normals[c_id].sample(sample_shape=(self.num_sampled_pcls,))
-                sampled_data.append(sampled_data_single)#sampled_data_single：（8,768）
+                sampled_data.append(sampled_data_single)  # sampled_data_single：（8,768）
                 sampled_label.extend([c_id] * self.num_sampled_pcls)
             # 使用采样特征再训练classifier
-            sampled_data = torch.cat(sampled_data, dim=0).to(torch.float32)#（160,768）
+            sampled_data = torch.cat(sampled_data, dim=0).to(torch.float32)  # （160,768）
             sampled_label = torch.tensor(sampled_label).long()
             inputs = sampled_data
             targets = sampled_label
@@ -549,7 +580,7 @@ class Trainer_ProtoCLIP(_Trainer):
             inputs = inputs[sf_indexes]
             targets = targets[sf_indexes]
 
-            for _iter in range(inputs.size(0)//sample_batch):
+            for _iter in range(inputs.size(0) // sample_batch):
                 inp = inputs[_iter * sample_batch:(_iter + 1) * sample_batch].cuda()  # 64,768
                 tgt = targets[_iter * sample_batch:(_iter + 1) * sample_batch].cuda()
                 # 有prototype而没有prompt，则第二阶段tune的是adapter本身——这个分支废弃，因为无法在第二阶段只tune adapter
@@ -557,7 +588,7 @@ class Trainer_ProtoCLIP(_Trainer):
                     logits, _, _ = self.custom_clip(inp, image_is_feature=True)
                 else:
                     # -stage two only use classifiers
-                    logits,_,_ = self.custom_clip(inp, image_is_feature = True)
+                    logits, _, _ = self.custom_clip(inp, image_is_feature=True)
 
                 if self.logit_norm is not None:
                     per_task_norm = []
@@ -581,9 +612,9 @@ class Trainer_ProtoCLIP(_Trainer):
                 loss.backward()
                 optimizer.step()
                 losses += loss.item()
-                del inp,tgt
+                del inp, tgt
                 gc.collect()
-            del sampled_data,sampled_label,inputs,targets
+            del sampled_data, sampled_label, inputs, targets
             gc.collect()
             scheduler.step()
             # test_acc = self._compute_accuracy(self.model, self.test_loader)
@@ -592,8 +623,6 @@ class Trainer_ProtoCLIP(_Trainer):
         del cls_normals
         gc.collect()
         logging.info("stage2 tune prompt finishied")
-
-
 
     def offline_evaluate(self, test_loader, classes_names):
         total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
@@ -641,7 +670,7 @@ class Trainer_ProtoCLIP(_Trainer):
                 if len(self.memory) < self.memory_size:
                     idx.append(-1)
                 else:
-                    j = torch.randint(0, self.seen, (1, )).item()
+                    j = torch.randint(0, self.seen, (1,)).item()
                     if j < self.memory_size:
                         idx.append(j)
                     else:
@@ -675,7 +704,7 @@ class Trainer_ProtoCLIP(_Trainer):
         else:
             self.scheduler.step()
 
-    def reset_opt(self,model):
+    def reset_opt(self, model):
         self.optimizer = select_optimizer(self.opt_name, self.lr, model)
         self.scheduler = select_scheduler(self.sched_name, self.optimizer,
                                           None)
@@ -693,25 +722,26 @@ class Trainer_ProtoCLIP(_Trainer):
 
     def add_new_class(self, class_name):
         _old_num = len(self.exposed_classes)
-        super().add_new_class(class_name)#将这批数据的新class加入到exposed_class变量中
+        super().add_new_class(class_name)  # 将这批数据的新class加入到exposed_class变量中
 
         # self.batch_exposed_classes = []
         # self.batch_exposed_classes_names = []
-        if self.memory_size > 0:#0
+        if self.memory_size > 0:  # 0
             self.batch_exposed_classes = self.exposed_classes
             self.batch_exposed_classes_names = self.exposed_classes_names
         else:
-            self.add_new_batch_class(class_name)#再将这批数据的新class从exposed_class变量中取出，加入到batch_exposed_classes变量中
+            self.add_new_batch_class(class_name)  # 再将这批数据的新class从exposed_class变量中取出，加入到batch_exposed_classes变量中
 
-    def report_training(self, epoch,sample_num, train_loss, train_acc):
+    def report_training(self, epoch, sample_num, train_loss, train_acc):
         logging.info(
             f"Train | epoch:{epoch}, Sample # {sample_num} | train_loss {train_loss:.4f} | train_acc {train_acc:.4f} | "
             f"lr {self.optimizer.param_groups[0]['lr']:.6f} | "
             f"Num_Classes {len(self.exposed_classes)} | "
             f"Num_Batch_Classes {len(self.batch_exposed_classes)} | "
             f"running_time {datetime.timedelta(seconds=int(time.time() - self.start_time))} | "
-            f"ETA {datetime.timedelta(seconds=int((time.time() - self.start_time) * (self.total_samples-sample_num) / sample_num))}"
+            f"ETA {datetime.timedelta(seconds=int((time.time() - self.start_time) * (self.total_samples - sample_num) / sample_num))}"
         )
+
 
 class DummyDataset(Dataset):
     def __init__(self, images, labels, trsf, use_path=False):
