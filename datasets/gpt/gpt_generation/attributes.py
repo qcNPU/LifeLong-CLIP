@@ -2,7 +2,7 @@ import json
 from openai import OpenAI
 from tqdm import tqdm
 import os.path as osp
-
+import os
 
 
 global_api_key = "sk-PdEqIkKM9Nu6EnkJ101672DaE0954d95A7F64eF62083Af01" # Enter Your API Key!!!
@@ -60,12 +60,8 @@ def get_completion(client, prompt, model="gpt-3.5-turbo", temperature=1):
     return response.choices[0].message.content.strip()
 
 def get_All_Descriptions(args):
-    if args is None:
-        gpt_dir = '/home/qc/project/LifeLong-CLIP/datasets/gpt/gpt_data'
-        db_name = 'cifar100'
-    else:
-        gpt_dir = args.get("gpt_dir")
-        db_name = args.get("dataset")
+    gpt_dir = osp.join(os.getcwd(),args.get("gpt_dir"))
+    db_name = args.get("dataset")
     # 要使用全局变量并赋值，需要使用global关键字
     global attributes
     # 1. 若没有缓存
