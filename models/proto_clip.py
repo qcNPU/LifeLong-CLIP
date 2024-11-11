@@ -131,7 +131,7 @@ class CUSTOM_CLIP(AdapterCLIP):
                 # 3.1 取出feature和label，
                 ima_fea = image_features[i:i + 1, :]
                 img_attrs = []
-                for lab in range(self._total_classes):
+                for lab in self.train_class_list:
                     # 3.2 取出该class 的attr str和attr embed
                     if use_cluster:
                         embs = []
@@ -144,7 +144,7 @@ class CUSTOM_CLIP(AdapterCLIP):
                     img_attrs.append(attr_strs)
                 attr_choose.append(img_attrs)
                 # 3.5 组装texual template
-                tempaltes = f"A photo of a {self.all_classnames[lab]}," + ",".join(attr_strs)
+                tempaltes = f"A photo of a {self.all_classnames[labels[i]]}," + ",".join(attr_strs)
                 # embed_choose.append(entity_choose)
                 attr_templa.append(tempaltes)
         else:

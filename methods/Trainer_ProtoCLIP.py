@@ -132,6 +132,7 @@ class Trainer_ProtoCLIP(_Trainer):
         x = self.train_transform(x)
         # 只用当前batch的classname来做train
         if self.distributed:
+            self.custom_clip.module.train_class_list = train_class_list
             self.custom_clip.module.set_prompt_token_by_clsname(classnames=train_class_name_list)
         else:
             self.custom_clip.set_prompt_token_by_clsname(classnames=train_class_name_list)
