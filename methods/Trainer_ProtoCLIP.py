@@ -61,7 +61,8 @@ class Trainer_ProtoCLIP(_Trainer):
             model = self.custom_clip.module
         else:
             model = self.custom_clip
-
+        model._known_classes = self._known_classes
+        model._total_classes = self._total_classes
         # Freeze some parameters
         for k, v in model.named_parameters():
             if "adaptmlp" in k or "lora" in k or "text_key" in k or "text_prompt" in k:
@@ -144,7 +145,7 @@ class Trainer_ProtoCLIP(_Trainer):
             loss_ce = self.criterion(logit, y)
             loss_reg = self.criterion(reg_logits,y)
             loss_key = self.cosine_loss(image_features,selected_key)
-            loss = loss_ce+loss_reg+loss_key
+            loss = loss_ce + 20*loss_reg + 0.7*loss_key
         with open(os.path.join(self.log_dir, 'loss.txt'), 'w') as f:
             f.write(f"ce:{loss_ce} | reg:{loss_reg} | key:{loss_key}\n")
         _, preds = logit.topk(self.topk, 1, True, True)

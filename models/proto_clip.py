@@ -1,3 +1,5 @@
+from typing import Union, List
+
 import torch
 import torch.nn as nn
 
@@ -77,15 +79,7 @@ class CUSTOM_CLIP(AdapterCLIP):
 
                 # 2.2 每个image feature 从对应 class 的 attribute cluster 中选择 3 个 attribute
                 attr_chose_emb, attr_templa, attr_choose = self.get_img_attrs(image_features, labels, test)  # (32,3,768)
-                # 获取 每个 img 得到的 attribute 文本
-                attr_ensemble = [",".join(i) for i in attr_choose]
-                # 得到其 token 的长度
-                ensemble_len = [len(_tokenizer.encode(i)) for i in attr_ensemble]
-                tokenized_ensemble = torch.cat([self.tokenize(p).cuda() for p in attr_ensemble])  # (n_cls, n_tkn)
-                with torch.no_grad():
-                    ensemble_embedding = self.token_embedding(tokenized_ensemble).type(self.dtype)
-                text_prompt, tokenized_prompts, _, _ = self.prompt_learner(selected_prompt, test, ensemble_embedding,
-                                                                           ensemble_len)
+                text_prompt, tokenized_prompts, _, _ = self.prompt_learner(selected_prompt, test, attr_choose)
                 text_features = self.text_encoder(text=text_prompt, tokenized_prompts=tokenized_prompts)
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
                 text_features = text_features.view(image_features.shape[0], self.n_class, -1)
@@ -114,7 +108,8 @@ class CUSTOM_CLIP(AdapterCLIP):
             _, indices = probability.topk(k=min(self.args.topK, probability.shape[1]), dim=1, largest=True)
             selected_prompt = self.text_prompt[indices].view(batch, self.n_ctx * self.args.topK, self.feature_dim)
 
-            text_prompt, tokenized_prompts, _, _ = self.prompt_learner(selected_prompt, test)
+            attr_chose_emb, attr_templa, attr_choose = self.get_img_attrs(image_features, labels, test)  # (32,3,768)
+            text_prompt, tokenized_prompts, _, _ = self.prompt_learner(selected_prompt, test, attr_choose)
             text_features = self.text_encoder(text=text_prompt, tokenized_prompts=tokenized_prompts)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
             text_features = text_features.view(image_features.shape[0], self.n_class, -1)
@@ -124,48 +119,52 @@ class CUSTOM_CLIP(AdapterCLIP):
             logits = logit_scale * (image_features * text_features).sum(-1)
             return logits
 
-    def get_img_attrs(self, image_features, labels, test, loss=1, use_cluster=True):
+    def get_img_attrs(self, image_features, labels, test=False, loss=1, use_cluster=True):
 
-        embed_choose = []
+        embed_choose = []   # todo train和test统一，都用所有class及对应的Attribute
         attr_templa = []
         attr_choose = []
         # tmp = 0 if test else self.args.class_per_task * self.args.sess
         # 3. 每个image feature与对应class的Attribute embed做匹配
-        for i in range(image_features.shape[0]):
-            # 3.1 取出feature和label，
-            ima_fea = image_features[i:i + 1, :]
-            # lab = labels[i].item() + tmp
-            lab = labels[i].item()  # 传入的 label 就是原本 label 值
-            # 3.2 取出该class 的attr str和attr embed
-            if use_cluster:
-                embs = []
-                attr_strs = []
-                for j, cluster in enumerate(self.cluster_info[2][lab]):
-                    probability_c = ima_fea @ cluster.t().cuda()
-                    _, ind = torch.max(probability_c, dim=-1)  # 取出相似度最高的一个
-                    # embs.append(cluster[ind.item():ind.item()+1,:])
-                    attr_strs.append(self.cluster_info[0][lab][j][ind.item()])
-                # todo 这里是把三个 attribute 放一块儿了，下面同理,这与 ArGue 不同，它的 attribute 是分开处理的，用于正则化
-                # entity_choose = torch.cat(embs, dim=0)
-            else:
-                ent_str = self.cls_en_map[0][lab]
-                ent_embed = self.cls_en_map[1][lab]  # (attriNum,768)
-                # 3.3 feature与attr embed做匹配，选出3个attribute 后
-                probability_e = ima_fea @ ent_embed.t()  # (1,768)  (attriNum,768)
-                _, indices_e = probability_e.topk(k=min(self.args.text_prompt, probability_e.shape[1]), dim=1,
-                                                  largest=True)  # (32,3)
-                # 3.4 记录匹配的attr str和attr embed
-                entity_choose = ent_embed[indices_e]  # indices：（32,3） (32,3,768)
-                attr_strs = []
-                for j in indices_e.squeeze(0):
-                    attr_strs.append(self.cls_en_map[0][lab][j.item()])
-
-            # 3.5 组装texual template
-            tempaltes = f"A photo of a {self.all_classnames[lab]}," + ",".join(attr_strs)
-            # embed_choose.append(entity_choose)
-            attr_choose.append(attr_strs)
-            attr_templa.append(tempaltes)
-
+        if not test:
+            for i in range(image_features.shape[0]):
+                # 3.1 取出feature和label，
+                ima_fea = image_features[i:i + 1, :]
+                img_attrs = []
+                for lab in range(self._total_classes):
+                    # 3.2 取出该class 的attr str和attr embed
+                    if use_cluster:
+                        embs = []
+                        attr_strs = []
+                        for j, cluster in enumerate(self.cluster_info[2][lab]):
+                            probability_c = ima_fea @ cluster.t().cuda()
+                            _, ind = torch.max(probability_c, dim=-1)  # 取出相似度最高的一个
+                            # embs.append(cluster[ind.item():ind.item()+1,:])
+                            attr_strs.append(self.cluster_info[0][lab][j][ind.item()])
+                    img_attrs.append(attr_strs)
+                attr_choose.append(img_attrs)
+                # 3.5 组装texual template
+                tempaltes = f"A photo of a {self.all_classnames[lab]}," + ",".join(attr_strs)
+                # embed_choose.append(entity_choose)
+                attr_templa.append(tempaltes)
+        else:
+            for i in range(image_features.shape[0]):
+                # 3.1 取出feature和label，
+                ima_fea = image_features[i:i + 1, :]
+                # lab = labels[i].item() + tmp
+                img_attrs = []
+                for lab in range(self._total_classes):
+                    # 3.2 取出该class 的attr str和attr embed
+                    if use_cluster:
+                        embs = []
+                        attr_strs = []
+                        for j, cluster in enumerate(self.cluster_info[2][lab]):
+                            probability_c = ima_fea @ cluster.t().cuda()
+                            _, ind = torch.max(probability_c, dim=-1)  # 取出相似度最高的一个
+                            # embs.append(cluster[ind.item():ind.item()+1,:])
+                            attr_strs.append(self.cluster_info[0][lab][j][ind.item()])
+                    img_attrs.append(attr_strs)
+                attr_choose.append(img_attrs)
         # attr_chose_emb = torch.stack(embed_choose, dim=0)
         attr_chose_emb = None
         # 3 个变量分别为img 选择的 attribute feature，选择的 attribute 组装的 template， 选择的 attribute string
@@ -227,7 +226,7 @@ class PromptLearner(nn.Module):
         self.token_prefix = None
         self.token_suffix = None
 
-    def forward(self, ctx, infer=False, ensemble_embedding=None, ensemble_len=None):  # 已审，代码没问题
+    def forward(self, ctx, infer=False, attr_choose=None, ensemble_len=None):  # 已审，代码没问题
         batch = ctx.shape[0]
         # ctx=self.text_prompt[indices].view(batch, self.n_ctx*self.args.topK, self.ctx_dim)#self.text_prompt[indices]=(batch,3,12,768)->(batch,36,768)
         tokenized_prompts = self.tokenized_prompts.view(self.n_cls, -1)
@@ -235,6 +234,13 @@ class PromptLearner(nn.Module):
 
         if self.prompt_pos == 2:
             if not infer:
+                # 获取 每个 img 得到的 attribute 文本
+                attr_ensemble = [",".join(i) for i in attr_choose]
+                # 得到其 token 的长度
+                with torch.no_grad():
+                    ensemble_len = [len(_tokenizer.encode(i)) for i in attr_ensemble]
+                    tokenized_ensemble = torch.cat([self.tokenize(p).cuda() for p in attr_ensemble])  # (n_cls, n_tkn)
+                    ensemble_embedding = self.token_embedding(tokenized_ensemble).type(self.dtype)
                 ensemble_i = ensemble_embedding.unsqueeze(1)
                 ctx_i = ctx.unsqueeze(1)
                 prompts = []
@@ -248,10 +254,26 @@ class PromptLearner(nn.Module):
                     prompts.append(prompt)
                 prompts = torch.cat(prompts, dim=1)
             else:
-                prefix = self.token_prefix.unsqueeze(0).repeat(batch, 1, 1, 1)
-                suffix = self.token_suffix.unsqueeze(0).repeat(batch, 1, 1, 1)
-                ctx = ctx.unsqueeze(1).repeat(1, n_cls, 1, 1)
-                prompts = torch.cat([prefix, ctx, suffix], dim=2)
+                total_prompts=[]
+                for ind,b in enumerate(attr_choose):
+                    cls_attrs = [",".join(c) for c in b]
+                    with torch.no_grad():
+                        tokenized_ensemble = torch.cat([self.tokenize(p).cuda() for p in cls_attrs])  # (n_cls, 77)
+                        ensemble_embedding = self.token_embedding(tokenized_ensemble).type(self.dtype) #(n_cls, 77，512)
+                    prompts = []
+                    for i in range(self.n_cls):
+                        name_len = self.name_lens[i]
+                        prefix_i = self.token_prefix[i:i + 1, :, :].unsqueeze(0)
+                        ctx_i = ctx[ind:ind+1,:,:].unsqueeze(1)
+                        class_i = self.token_suffix[i:i + 1, :name_len, :].unsqueeze(0)  # token_suffix已经是挖空后的，所以直接取name_len就行
+                        suffix_i = self.token_suffix[i:i + 1, name_len:, :].unsqueeze(0) # 这里已没有意义
+                        ensemble_i = ensemble_embedding[i:i+1,:,:].unsqueeze(0)
+                        prompt = torch.cat([prefix_i, ctx_i, class_i, ensemble_i, suffix_i], dim=2)
+                        prompt = prompt[:, :, :77, :]  # class+Attribute长度不会超77，这里直接截断
+                        prompts.append(prompt)
+                    prompts = torch.cat(prompts, dim=1)
+                    total_prompts.append(prompts)
+                prompts = torch.cat(total_prompts,dim=0)
 
         # 维度2的尺寸不是1，所以squeeze函数不会起效
         prompts = prompts.squeeze(2).view(batch * self.n_cls, -1,
@@ -264,6 +286,39 @@ class PromptLearner(nn.Module):
         else:
             # nc_prompts, nc_tokenized_prompts = self.only_prefix()
             return prompts, tokenized_prompts, None, None
+
+    def tokenize(self,
+                 texts: Union[str, List[str]],
+                 context_length: int = 77) -> torch.LongTensor:
+        """
+        Returns the tokenized representation of given input string(s)
+        Parameters
+        ----------
+        texts : Union[str, List[str]]
+            An input string or a list of labels to tokenize
+        context_length : int
+            The context length to use; all CLIP models use 77 as the context length
+        Returns
+        -------
+        A two-dimensional tensor containing the resulting tokens, shape = [number of input strings, context_length]
+        """
+        if isinstance(texts, str):
+            texts = [texts]
+
+        sot_token = _tokenizer.encoder["<start_of_text>"]
+        eot_token = _tokenizer.encoder["<end_of_text>"]
+        all_tokens = [[sot_token] + _tokenizer.encode(text) + [eot_token]
+                      for text in texts]
+        result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
+
+        for i, tokens in enumerate(all_tokens):
+            if len(tokens) > context_length:  # Truncate
+                tokens = tokens[:context_length]
+            result[i, :len(tokens)] = torch.tensor(tokens)
+
+        # return result.to(self.device)
+        return result
+
 
     def only_prefix(self):
         ctx = self.text_prompt
