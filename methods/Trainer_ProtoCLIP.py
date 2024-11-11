@@ -146,7 +146,7 @@ class Trainer_ProtoCLIP(_Trainer):
             loss_ce = self.criterion(logit, y)
             loss_reg = self.criterion(reg_logits,y)
             loss_key = self.cosine_loss(image_features,selected_key)
-            loss = loss_ce + 20*loss_reg + 0.7*loss_key
+            loss = loss_ce + 20*loss_reg + loss_key
         with open(os.path.join(self.log_dir, 'loss.txt'), 'w') as f:
             f.write(f"ce:{loss_ce} | reg:{loss_reg} | key:{loss_key}\n")
         _, preds = logit.topk(self.topk, 1, True, True)
@@ -585,6 +585,12 @@ class Trainer_ProtoCLIP(_Trainer):
             m = MultivariateNormal(cls_mean.float(), cls_cov.float())
             cls_normals[c_id] = m
 
+        sample_list=[64, 62, 60, 59, 57, 55, 54, 52, 51, 49, 48, 46, 45, 44, 42, 41, 40, 39, 37,
+ 36, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 26, 25, 24, 23, 23, 22, 21, 21,
+ 20, 19, 19, 18, 18, 17, 17, 16, 16, 15, 15, 14, 14, 13, 13, 12, 12, 12, 11,
+ 11, 11, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+ 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10]
+
         sample_batch = 16
         for epoch in range(run_epochs):
             losses = 0.
@@ -593,9 +599,10 @@ class Trainer_ProtoCLIP(_Trainer):
 
             for c_id in range(crct_num):
                 # 采样特征
-                sampled_data_single = cls_normals[c_id].sample(sample_shape=(self.num_sampled_pcls,))
+                samp_num = sample_list[100/crct_num*c_id]
+                sampled_data_single = cls_normals[c_id].sample(sample_shape=(samp_num,))
                 sampled_data.append(sampled_data_single)  # sampled_data_single：（8,768）
-                sampled_label.extend([c_id] * self.num_sampled_pcls)
+                sampled_label.extend([c_id] * samp_num)
             # 使用采样特征再训练classifier
             sampled_data = torch.cat(sampled_data, dim=0).to(torch.float32)  # （160,768）
             sampled_label = torch.tensor(sampled_label).long()
