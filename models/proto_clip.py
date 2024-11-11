@@ -234,25 +234,45 @@ class PromptLearner(nn.Module):
 
         if self.prompt_pos == 2:
             if not infer:
-                # 获取 每个 img 得到的 attribute 文本
-                attr_ensemble = [",".join(i) for i in attr_choose]
-                # 得到其 token 的长度
-                with torch.no_grad():
-                    ensemble_len = [len(_tokenizer.encode(i)) for i in attr_ensemble]
-                    tokenized_ensemble = torch.cat([self.tokenize(p).cuda() for p in attr_ensemble])  # (n_cls, n_tkn)
-                    ensemble_embedding = self.token_embedding(tokenized_ensemble).type(self.dtype)
-                ensemble_i = ensemble_embedding.unsqueeze(1)
-                ctx_i = ctx.unsqueeze(1)
-                prompts = []
-                for i in range(self.n_cls):
-                    name_len = self.name_lens[i]
-                    prefix_i = self.token_prefix[i:i + 1, :, :].unsqueeze(0).repeat(batch, 1, 1, 1)
-                    class_i = self.token_suffix[i:i + 1, :name_len, :].unsqueeze(0).repeat(batch, 1, 1, 1)#token_suffix已经是挖空后的，所以直接取name_len就行
-                    suffix_i = self.token_suffix[i:i + 1, name_len:, :].unsqueeze(0).repeat(batch, 1, 1, 1)#这里已没有意义
-                    prompt = torch.cat([prefix_i, ctx_i, class_i, ensemble_i, suffix_i], dim=2)
-                    prompt = prompt[:,:,:77,:]#class+Attribute长度不会超77，这里直接截断
-                    prompts.append(prompt)
-                prompts = torch.cat(prompts, dim=1)
+                total_prompts=[]
+                for ind,b in enumerate(attr_choose):
+                    cls_attrs = [",".join(c) for c in b]
+                    with torch.no_grad():
+                        tokenized_ensemble = torch.cat([self.tokenize(p).cuda() for p in cls_attrs])  # (n_cls, 77)
+                        ensemble_embedding = self.token_embedding(tokenized_ensemble).type(self.dtype) #(n_cls, 77，512)
+                    prompts = []
+                    for i in range(self.n_cls):
+                        name_len = self.name_lens[i]
+                        prefix_i = self.token_prefix[i:i + 1, :, :].unsqueeze(0)
+                        ctx_i = ctx[ind:ind+1,:,:].unsqueeze(1)
+                        class_i = self.token_suffix[i:i + 1, :name_len, :].unsqueeze(0)  # token_suffix已经是挖空后的，所以直接取name_len就行
+                        suffix_i = self.token_suffix[i:i + 1, name_len:, :].unsqueeze(0) # 这里已没有意义
+                        ensemble_i = ensemble_embedding[i:i+1,:,:].unsqueeze(0)
+                        prompt = torch.cat([prefix_i, ctx_i, class_i, ensemble_i, suffix_i], dim=2)
+                        prompt = prompt[:, :, :77, :]  # class+Attribute长度不会超77，这里直接截断
+                        prompts.append(prompt)
+                    prompts = torch.cat(prompts, dim=1)
+                    total_prompts.append(prompts)
+                prompts = torch.cat(total_prompts,dim=0)
+                # # 获取 每个 img 得到的 attribute 文本      下面注释掉的是另一种实现，Attribute相同，只有class不同，上面的是class和Attribute都不同
+                # attr_ensemble = [",".join(i) for i in attr_choose]
+                # # 得到其 token 的长度
+                # with torch.no_grad():
+                #     ensemble_len = [len(_tokenizer.encode(i)) for i in attr_ensemble]
+                #     tokenized_ensemble = torch.cat([self.tokenize(p).cuda() for p in attr_ensemble])  # (n_cls, n_tkn)
+                #     ensemble_embedding = self.token_embedding(tokenized_ensemble).type(self.dtype)
+                # ensemble_i = ensemble_embedding.unsqueeze(1)
+                # ctx_i = ctx.unsqueeze(1)
+                # prompts = []
+                # for i in range(self.n_cls):
+                #     name_len = self.name_lens[i]
+                #     prefix_i = self.token_prefix[i:i + 1, :, :].unsqueeze(0).repeat(batch, 1, 1, 1)
+                #     class_i = self.token_suffix[i:i + 1, :name_len, :].unsqueeze(0).repeat(batch, 1, 1, 1)#token_suffix已经是挖空后的，所以直接取name_len就行
+                #     suffix_i = self.token_suffix[i:i + 1, name_len:, :].unsqueeze(0).repeat(batch, 1, 1, 1)#这里已没有意义
+                #     prompt = torch.cat([prefix_i, ctx_i, class_i, ensemble_i, suffix_i], dim=2)
+                #     prompt = prompt[:,:,:77,:]#class+Attribute长度不会超77，这里直接截断
+                #     prompts.append(prompt)
+                # prompts = torch.cat(prompts, dim=1)
             else:
                 total_prompts=[]
                 for ind,b in enumerate(attr_choose):
