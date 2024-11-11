@@ -5,6 +5,7 @@ import logging
 import datetime
 import os.path as osp
 from tqdm import tqdm
+import os
 
 import numpy as np
 from sklearn.metrics import confusion_matrix
@@ -41,15 +42,18 @@ class Trainer_ProtoCLIP(_Trainer):
         self.batch_exposed_classes_names = []
         self.visible_classes = self.args.get('visible_classes', 'batch')
 
-    def setup_dataset(self):
-        super().setup_dataset()
+    def before_train(self):
         # 获取数据集所有class name的Attribute的word embedding
         cls_en_map = self.getTaskAttributeEmbedding(args=self.args, class_names=self.all_classnames,
                                                     clip_model=self.custom_clip.module,
                                                     text_encoder=self.custom_clip.module.text_encoder)
         # self.custom_clip.module.init_cls_map(cls_en_map)
-        self.cls_en_map = cls_en_map
-        self.cluster_info = self.cluster_attributes(cls_en_map)
+        # self.custom_clip.module.cls_en_map = cls_en_map
+        self.custom_clip.module.all_classnames = self.all_classnames
+        cluster_info = self.cluster_attributes(cls_en_map)
+        self.custom_clip.module.cluster_info = cluster_info
+
+
 
     def online_before_task(self, task_id):
         # 这里传custom_clip.module和custom_clip是一样的，会自动选择到module里的参数
@@ -133,11 +137,16 @@ class Trainer_ProtoCLIP(_Trainer):
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            logit, image_features, text_features = self.custom_clip(image=x, labels=y)
+            logit, reg_logits,image_features, template_fea,selected_key = self.custom_clip(image=x, labels=y)
             # 只用batch class做CE
             for j in range(len(y)):
                 y[j] = train_class_list.index(y[j].item())
-            loss = self.criterion(logit, y)
+            loss_ce = self.criterion(logit, y)
+            loss_reg = self.criterion(reg_logits,y)
+            loss_key = self.cosine_loss(image_features,selected_key)
+            loss = loss_ce+loss_reg+loss_key
+        with open(os.path.join(self.log_dir, 'loss.txt'), 'w') as f:
+            f.write(f"ce:{loss_ce} | reg:{loss_reg} | key:{loss_key}\n")
         _, preds = logit.topk(self.topk, 1, True, True)
 
         self.optimizer.zero_grad()
@@ -146,16 +155,29 @@ class Trainer_ProtoCLIP(_Trainer):
         self.scaler.update()
         self.update_schedule()
 
-        if self.args.get('grad_analysis', False):
-            self._grad_analysis(image_features.clone().detach(),
-                                text_features.clone().detach(),
-                                y.clone().detach(), train_class_list)
+        # if self.args.get('grad_analysis', False):
+        #     self._grad_analysis(image_features.clone().detach(),
+        #                         text_features.clone().detach(),
+        #                         y.clone().detach(), train_class_list)
 
-        total_loss += loss.item()
+        total_loss += loss.detach().item()
         total_correct += torch.sum(preds == y.unsqueeze(1)).item()
         total_num_data += y.size(0)
 
         return total_loss, total_correct / total_num_data
+
+    def cosine_loss(self,q, k):
+        # pdb.set_trace()
+        q = q.repeat(1, k.shape[1], 1)
+        # k = k.squeeze(1)
+        # q = q/q.norm(dim=-1)
+        k_norm = k.norm(dim=-1, keepdim=True)
+        # pdb.set_trace()
+        # k_norm = k.norm(dim=-1).unsqueeze(1).repeat(1,k.shape[1])
+        k = k / k_norm
+        cos = ((q * k) / (k.shape[0] * k.shape[1])).sum()
+        return 1 - cos
+
 
     def online_after_task(self, task_id):
         self.stage1_and_stage2()
@@ -178,7 +200,7 @@ class Trainer_ProtoCLIP(_Trainer):
                 x = x.cuda()
                 y = y.cuda()
 
-                logit, _, _ = self.custom_clip(x, test=True)
+                logit = self.custom_clip(x, test=True)
                 pred = torch.argmax(logit, dim=-1)
                 xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(y, pred)
                 correct_l += correct_xlabel_cnt
@@ -330,10 +352,10 @@ class Trainer_ProtoCLIP(_Trainer):
         with torch.no_grad():
             for index, attrs in cls_str_map.items():
                 # 遇到DataParallel’ object has no attribute ‘xxxx’时，在model后面加上.module.
-                tokenized_keys = torch.cat([self.custom_clip.module.tokenize(p) for p in attrs]).cuda()  # （298,77）
-                attr_token = self.custom_clip.module.token_embedding(tokenized_keys)
+                tokenized_keys = torch.cat([clip_model.tokenize(p).cuda() for p in attrs])  # （298,77）
+                attr_token = clip_model.token_embedding(tokenized_keys)
                 attr_token_map[index] = attr_token
-                attr_fea = text_encoder(text=attr_token, tokenized_prompts=None, need_token=False)
+                attr_fea = text_encoder(text=tokenized_keys, tokenized_prompts=None, need_token=True)
                 # entity_embeddings,_ = entity_embeddings.max(dim=1)
                 attr_fea /= attr_fea.norm(dim=-1, keepdim=True)  # 归一化（298,768）
                 attr_fea_map[index] = attr_fea
@@ -361,7 +383,7 @@ class Trainer_ProtoCLIP(_Trainer):
     def cluster_attributes(self, cls_en_map):
         num_clusters = 3
         max_iterations = 100
-        cluster_features = {}
+        cluster_features = []
         cluster_strs = []
         cluster_tokens = []
         tolerance = 1e-4
@@ -383,10 +405,11 @@ class Trainer_ProtoCLIP(_Trainer):
             for i, cluster_id in enumerate(cluster_ids_x):  # i是索引，cluster_id是它属于哪个簇
                 features[cluster_id].append(emb[i])
                 strs[cluster_id].append(cls_en_map[0][ind][i])
-                tokens[cluster_id].append(cls_en_map[1][ind][i])
-            cluster_features[ind] = features
-            # cluster_strs.append(strs)
-            # cluster_tokens.append(strs)
+                # tokens[cluster_id].append(cls_en_map[1][ind][i])
+            features = [torch.stack(i,dim=0) for i in features]
+            cluster_features.append(features)
+            cluster_strs.append(strs)
+            cluster_tokens.append(strs)
 
         return [cluster_strs, cluster_tokens, cluster_features]
 
@@ -585,10 +608,10 @@ class Trainer_ProtoCLIP(_Trainer):
                 tgt = targets[_iter * sample_batch:(_iter + 1) * sample_batch].cuda()
                 # 有prototype而没有prompt，则第二阶段tune的是adapter本身——这个分支废弃，因为无法在第二阶段只tune adapter
                 if 'prompt' not in self.model_type and 'prototype' in self.model_type:
-                    logits, _, _ = self.custom_clip(inp, image_is_feature=True)
+                    logits = self.custom_clip(inp, image_is_feature=True,test = True)
                 else:
                     # -stage two only use classifiers
-                    logits, _, _ = self.custom_clip(inp, image_is_feature=True)
+                    logits= self.custom_clip(inp, image_is_feature=True,test = True)
 
                 if self.logit_norm is not None:
                     per_task_norm = []

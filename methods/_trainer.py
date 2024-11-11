@@ -168,6 +168,9 @@ class _Trainer():
             self.custom_clip = nn.DataParallel(self.custom_clip)
         self.custom_clip = self.custom_clip.cuda()
 
+    def before_train(self):
+        pass
+
     def setup_zero_shot_dataset(self, dataset_name):
         dataset, mean, std, _ = get_dataset(dataset_name)
         test_transform = transforms.Compose([
@@ -199,7 +202,7 @@ class _Trainer():
                                          download=True,
                                          transform=self.test_transform)
         self.n_classes = len(self.train_dataset.classes)
-        self.all_classnames = self.train_dataset.class_names
+        self.all_classnames = self.train_dataset.classes_names
         self.classes = self.train_dataset.classes
         self.exposed_classes = []
         self.exposed_classes_names = []
@@ -283,6 +286,7 @@ class _Trainer():
         # 获取Attribute、cluster都在这里
         self.setup_dataset()
         self.setup_distributed_model()
+        self.before_train()
         self.memory = Memory()
         self.total_samples = len(self.train_dataset)
 

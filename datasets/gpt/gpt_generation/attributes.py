@@ -64,8 +64,8 @@ def get_All_Descriptions(args):
         gpt_dir = '/home/qc/project/LifeLong-CLIP/datasets/gpt/gpt_data'
         db_name = 'cifar100'
     else:
-        gpt_dir = args.gpt_dir
-        db_name = args.db_name
+        gpt_dir = args.get("gpt_dir")
+        db_name = args.get("dataset")
     # 要使用全局变量并赋值，需要使用global关键字
     global attributes
     # 1. 若没有缓存
