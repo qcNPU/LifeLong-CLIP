@@ -599,7 +599,7 @@ class Trainer_ProtoCLIP(_Trainer):
 
             for c_id in range(crct_num):
                 # 采样特征
-                samp_num = sample_list[100/crct_num*c_id]
+                samp_num = sample_list[100//crct_num*c_id]
                 sampled_data_single = cls_normals[c_id].sample(sample_shape=(samp_num,))
                 sampled_data.append(sampled_data_single)  # sampled_data_single：（8,768）
                 sampled_label.extend([c_id] * samp_num)
