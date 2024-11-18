@@ -44,14 +44,13 @@ class Trainer_ProtoCLIP(_Trainer):
 
     def before_train(self):
         # 获取数据集所有class name的Attribute的word embedding
-        cls_en_map = self.getTaskAttributeEmbedding(args=self.args, class_names=self.all_classnames,
-                                                    clip_model=self.custom_clip.module,
-                                                    text_encoder=self.custom_clip.module.text_encoder)
-        # self.custom_clip.module.init_cls_map(cls_en_map)
-        # self.custom_clip.module.cls_en_map = cls_en_map
-        self.custom_clip.module.all_classnames = self.all_classnames
-        cluster_info = self.cluster_attributes(cls_en_map)
-        self.custom_clip.module.cluster_info = cluster_info
+        # cls_en_map = self.getTaskAttributeEmbedding(args=self.args, class_names=self.all_classnames,
+        #                                             clip_model=self.custom_clip.module,
+        #                                             text_encoder=self.custom_clip.module.text_encoder)
+        # self.custom_clip.module.all_classnames = self.all_classnames
+        # cluster_info = self.cluster_attributes(cls_en_map)
+        # self.custom_clip.module.cluster_info = cluster_info
+        pass
 
 
 
@@ -124,8 +123,9 @@ class Trainer_ProtoCLIP(_Trainer):
             x = torch.cat([x, memory_images], dim=0)
             y = torch.cat([y, memory_labels], dim=0)
 
-        # x = x.to(self.device)
-        # y = y.to(self.device)
+        for j in range(len(y)):#只用batch class做训练
+            y[j] = train_class_list.index(y[j].item())
+
         x = x.cuda()
         y = y.cuda()
 
@@ -139,16 +139,10 @@ class Trainer_ProtoCLIP(_Trainer):
 
         self.optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            logit, reg_logits,image_features, template_fea,selected_key = self.custom_clip(image=x, labels=y)
-            # 只用batch class做CE
-            for j in range(len(y)):
-                y[j] = train_class_list.index(y[j].item())
+            logit, image_features, text_features,selected_key = self.custom_clip(image=x)
             loss_ce = self.criterion(logit, y)
-            loss_reg = self.criterion(reg_logits,y)
-            loss_key = self.cosine_loss(image_features,selected_key)
-            loss = loss_ce + 20*loss_reg + loss_key
-        with open(os.path.join(self.log_dir, 'loss.txt'), 'w') as f:
-            f.write(f"ce:{loss_ce} | reg:{loss_reg} | key:{loss_key}\n")
+            # loss_key = self.cosine_loss(image_features,selected_key)
+            loss = loss_ce #+ loss_key
         _, preds = logit.topk(self.topk, 1, True, True)
 
         self.optimizer.zero_grad()
@@ -202,7 +196,7 @@ class Trainer_ProtoCLIP(_Trainer):
                 x = x.cuda()
                 y = y.cuda()
 
-                logit = self.custom_clip(x, test=True)
+                logit = self.custom_clip(x, train = False)
                 pred = torch.argmax(logit, dim=-1)
                 xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(y, pred)
                 correct_l += correct_xlabel_cnt
@@ -345,107 +339,6 @@ class Trainer_ProtoCLIP(_Trainer):
         logging.info("_compute_class_mean finished")
 
         # self._class_covs.append(class_cov)
-
-    def getTaskAttributeEmbedding(self, args, class_names, clip_model, text_encoder):
-        # cls_str_map = getTaskEntitys(args, class_names)
-        cls_str_map = self.getTaskAttributes(args, class_names)
-        attr_token_map = {}
-        attr_fea_map = {}
-        with torch.no_grad():
-            for index, attrs in cls_str_map.items():
-                # 遇到DataParallel’ object has no attribute ‘xxxx’时，在model后面加上.module.
-                tokenized_keys = torch.cat([clip_model.tokenize(p).cuda() for p in attrs])  # （298,77）
-                attr_token = clip_model.token_embedding(tokenized_keys)
-                attr_token_map[index] = attr_token
-                attr_fea = text_encoder(text=tokenized_keys, tokenized_prompts=None, need_token=True)
-                # entity_embeddings,_ = entity_embeddings.max(dim=1)
-                attr_fea /= attr_fea.norm(dim=-1, keepdim=True)  # 归一化（298,768）
-                attr_fea_map[index] = attr_fea
-
-        return [cls_str_map, attr_token_map, attr_fea_map]
-
-    def getTaskAttributes(self, args, train_classnames):
-        # 取出task中所有class的entity和attribute，合并去重
-        class_attributes = attributes.get_Classes_Attributes(args, train_classnames)
-        classMap = {}
-        for i, info in enumerate(class_attributes):
-            attrs = list()
-            for j in info:
-                a1 = [s for s in j.split("|") if s.strip() != '']
-                attrs.extend(a1)
-            classMap[i] = attrs
-        return classMap
-
-    # def init_cls_map(self, cls_en_map):
-    #     self.cls_en_map = cls_en_map
-    #     self.cluster_info = self.cluster_attributes(cls_en_map)
-    #     self.key_statis = {i: {j: 0 for j in range(10)} for i in range(self.args.class_per_task * (self.args.sess + 1))}
-    #     self.overall_key_counts = {cls: {i: 0 for i in range(self.args.num_prompt)} for cls in range(100)}
-
-    def cluster_attributes(self, cls_en_map):
-        num_clusters = 3
-        max_iterations = 100
-        cluster_features = []
-        cluster_strs = []
-        cluster_tokens = []
-        tolerance = 1e-4
-        for ind, emb in cls_en_map[2].items():
-            # 使用 kmeans-pytorch 进行 K-means 聚类
-            # cluster_ids_x, cluster_centers = kmeans(
-            #     X=emb, num_clusters=num_clusters, distance='cosine', device=torch.device('cuda')
-            # )
-
-            kmeans = KMeans(n_clusters=num_clusters, max_iter=max_iterations, n_init=10, tol=tolerance, random_state=42)
-            kmeans.fit(emb.cpu().numpy())  # 使用 numpy 数据
-
-            # 获取聚类分配结果
-            cluster_ids_x = kmeans.labels_
-            # 根据聚类分配结果将样本分到不同的组
-            features = [[] for _ in range(num_clusters)]
-            strs = [[] for _ in range(num_clusters)]
-            tokens = [[] for _ in range(num_clusters)]
-            for i, cluster_id in enumerate(cluster_ids_x):  # i是索引，cluster_id是它属于哪个簇
-                features[cluster_id].append(emb[i])
-                strs[cluster_id].append(cls_en_map[0][ind][i])
-                # tokens[cluster_id].append(cls_en_map[1][ind][i])
-            features = [torch.stack(i,dim=0) for i in features]
-            cluster_features.append(features)
-            cluster_strs.append(strs)
-            cluster_tokens.append(strs)
-
-        return [cluster_strs, cluster_tokens, cluster_features]
-
-    def image_display(images, attributes, prefix, grid_size=(3, 3)):
-        """
-        显示图片网格及其对应的 Attribute 字符串
-
-        :param images: 图片的张量列表
-        :param attributes: 图片对应的 Attribute 字符串列表
-        :param grid_size: 网格的行列数 (rows, cols)
-        """
-        nrow = 4
-        # 将张量转换为 numpy 数组并归一化到 [0, 1]
-        image_np = (images - images.min()) / (images.max() - images.min())
-        num_images = len(images)
-        ncol = (num_images + nrow - 1) // nrow
-        fig, axes = plt.subplots(ncol, nrow, figsize=(32, 22))
-
-        for i in range(num_images):
-            row = i // nrow
-            col = i % nrow
-            ax = axes[row, col]
-            img = image_np[i].permute(1, 2, 0).cpu().numpy()
-            ax.imshow(img)
-            ax.set_title("\n".join(attributes[i]), fontsize=20)
-            ax.axis('off')
-
-        # Hide any unused subplots
-        for i in range(num_images, ncol * nrow):
-            fig.delaxes(axes.flat[i])
-
-        plt.subplots_adjust(wspace=0.4, hspace=0.8)
-        fig.savefig(f"{prefix}.png")
-        plt.close(fig)
 
     def get_dataset_by_indices(
             self, indices, source, mode, appendent=None, ret_data=False, m_rate=None
@@ -599,7 +492,8 @@ class Trainer_ProtoCLIP(_Trainer):
 
             for c_id in range(crct_num):
                 # 采样特征
-                samp_num = sample_list[100//crct_num*c_id]
+                # samp_num = sample_list[100//crct_num*c_id]
+                samp_num  = self.num_sampled_pcls
                 sampled_data_single = cls_normals[c_id].sample(sample_shape=(samp_num,))
                 sampled_data.append(sampled_data_single)  # sampled_data_single：（8,768）
                 sampled_label.extend([c_id] * samp_num)
@@ -617,10 +511,10 @@ class Trainer_ProtoCLIP(_Trainer):
                 tgt = targets[_iter * sample_batch:(_iter + 1) * sample_batch].cuda()
                 # 有prototype而没有prompt，则第二阶段tune的是adapter本身——这个分支废弃，因为无法在第二阶段只tune adapter
                 if 'prompt' not in self.model_type and 'prototype' in self.model_type:
-                    logits = self.custom_clip(inp, image_is_feature=True,test = True)
+                    logits = self.custom_clip(inp, image_is_feature=True,train = False)
                 else:
                     # -stage two only use classifiers
-                    logits= self.custom_clip(inp, image_is_feature=True,test = True)
+                    logits= self.custom_clip(inp, image_is_feature=True,train = False)
 
                 if self.logit_norm is not None:
                     per_task_norm = []
@@ -644,8 +538,6 @@ class Trainer_ProtoCLIP(_Trainer):
                 loss.backward()
                 optimizer.step()
                 losses += loss.item()
-                del inp, tgt
-                gc.collect()
             del sampled_data, sampled_label, inputs, targets
             gc.collect()
             scheduler.step()
@@ -804,3 +696,105 @@ class DummyDataset(Dataset):
         with open(path, "rb") as f:
             img = Image.open(f)
             return img.convert("RGB")
+
+
+def getTaskAttributeEmbedding(self, args, class_names, clip_model, text_encoder):
+    # cls_str_map = getTaskEntitys(args, class_names)
+    cls_str_map = self.getTaskAttributes(args, class_names)
+    attr_token_map = {}
+    attr_fea_map = {}
+    with torch.no_grad():
+        for index, attrs in cls_str_map.items():
+            # 遇到DataParallel’ object has no attribute ‘xxxx’时，在model后面加上.module.
+            tokenized_keys = torch.cat([clip_model.tokenize(p).cuda() for p in attrs])  # （298,77）
+            attr_token = clip_model.token_embedding(tokenized_keys)
+            attr_token_map[index] = attr_token
+            attr_fea = text_encoder(text=tokenized_keys, tokenized_prompts=None, need_token=True)
+            # entity_embeddings,_ = entity_embeddings.max(dim=1)
+            attr_fea /= attr_fea.norm(dim=-1, keepdim=True)  # 归一化（298,768）
+            attr_fea_map[index] = attr_fea
+
+    return [cls_str_map, attr_token_map, attr_fea_map]
+
+def getTaskAttributes(self, args, train_classnames):
+    # 取出task中所有class的entity和attribute，合并去重
+    class_attributes = attributes.get_Classes_Attributes(args, train_classnames)
+    classMap = {}
+    for i, info in enumerate(class_attributes):
+        attrs = list()
+        for j in info:
+            a1 = [s for s in j.split("|") if s.strip() != '']
+            attrs.extend(a1)
+        classMap[i] = attrs
+    return classMap
+
+# def init_cls_map(self, cls_en_map):
+#     self.cls_en_map = cls_en_map
+#     self.cluster_info = self.cluster_attributes(cls_en_map)
+#     self.key_statis = {i: {j: 0 for j in range(10)} for i in range(self.args.class_per_task * (self.args.sess + 1))}
+#     self.overall_key_counts = {cls: {i: 0 for i in range(self.args.num_prompt)} for cls in range(100)}
+
+def cluster_attributes(self, cls_en_map):
+    num_clusters = 3
+    max_iterations = 100
+    cluster_features = []
+    cluster_strs = []
+    cluster_tokens = []
+    tolerance = 1e-4
+    for ind, emb in cls_en_map[2].items():
+        # 使用 kmeans-pytorch 进行 K-means 聚类
+        # cluster_ids_x, cluster_centers = kmeans(
+        #     X=emb, num_clusters=num_clusters, distance='cosine', device=torch.device('cuda')
+        # )
+
+        kmeans = KMeans(n_clusters=num_clusters, max_iter=max_iterations, n_init=10, tol=tolerance, random_state=42)
+        kmeans.fit(emb.cpu().numpy())  # 使用 numpy 数据
+
+        # 获取聚类分配结果
+        cluster_ids_x = kmeans.labels_
+        # 根据聚类分配结果将样本分到不同的组
+        features = [[] for _ in range(num_clusters)]
+        strs = [[] for _ in range(num_clusters)]
+        tokens = [[] for _ in range(num_clusters)]
+        for i, cluster_id in enumerate(cluster_ids_x):  # i是索引，cluster_id是它属于哪个簇
+            features[cluster_id].append(emb[i])
+            strs[cluster_id].append(cls_en_map[0][ind][i])
+            # tokens[cluster_id].append(cls_en_map[1][ind][i])
+        features = [torch.stack(i,dim=0) for i in features]
+        cluster_features.append(features)
+        cluster_strs.append(strs)
+        cluster_tokens.append(strs)
+
+    return [cluster_strs, cluster_tokens, cluster_features]
+
+def image_display(images, attributes, prefix, grid_size=(3, 3)):
+    """
+    显示图片网格及其对应的 Attribute 字符串
+
+    :param images: 图片的张量列表
+    :param attributes: 图片对应的 Attribute 字符串列表
+    :param grid_size: 网格的行列数 (rows, cols)
+    """
+    nrow = 4
+    # 将张量转换为 numpy 数组并归一化到 [0, 1]
+    image_np = (images - images.min()) / (images.max() - images.min())
+    num_images = len(images)
+    ncol = (num_images + nrow - 1) // nrow
+    fig, axes = plt.subplots(ncol, nrow, figsize=(32, 22))
+
+    for i in range(num_images):
+        row = i // nrow
+        col = i % nrow
+        ax = axes[row, col]
+        img = image_np[i].permute(1, 2, 0).cpu().numpy()
+        ax.imshow(img)
+        ax.set_title("\n".join(attributes[i]), fontsize=20)
+        ax.axis('off')
+
+    # Hide any unused subplots
+    for i in range(num_images, ncol * nrow):
+        fig.delaxes(axes.flat[i])
+
+    plt.subplots_adjust(wspace=0.4, hspace=0.8)
+    fig.savefig(f"{prefix}.png")
+    plt.close(fig)

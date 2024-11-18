@@ -283,7 +283,6 @@ class _Trainer():
         self.dtype = self.custom_clip.dtype
 
         self.setup_transforms()
-        # 获取Attribute、cluster都在这里
         self.setup_dataset()
         self.setup_distributed_model()
         self.before_train()

@@ -811,6 +811,7 @@ def build_model(state_dict: dict, design_details: dict):
         if key in state_dict:
             del state_dict[key]
 
+    # 这里没有convert_weights方法
     model.load_state_dict(state_dict, strict=False)
     for p in model.parameters():
         p.data = p.data.float()

@@ -6,6 +6,7 @@
 import math
 import torch
 import torch.nn as nn
+from cbp_linear import CBPLinear
 
 
 class Adapter(nn.Module):
@@ -15,7 +16,10 @@ class Adapter(nn.Module):
                  dropout=0.0,
                  init_option="lora",
                  adapter_scalar="1.0",
-                 adapter_layernorm_option="in"):
+                 adapter_layernorm_option="in",
+                 replacement_rate = 0.0001,
+                 maturity_threshold = 100,
+                 init = "default"):
         super().__init__()
         self.n_embd = d_model if d_model is None else d_model
         self.down_size = bottleneck
@@ -36,6 +40,9 @@ class Adapter(nn.Module):
         self.non_linear_func = nn.ReLU()
         self.up_proj = nn.Linear(self.down_size, self.n_embd)
 
+        self.cbp1 = CBPLinear(in_layer=self.down_proj, out_layer=self.up_proj, replacement_rate=replacement_rate,
+                            maturity_threshold=maturity_threshold, init=init)
+
         self.dropout = dropout
         if init_option == "bert":
             raise NotImplementedError
@@ -54,7 +61,8 @@ class Adapter(nn.Module):
 
         down = self.down_proj(x)
         down = self.non_linear_func(down)
-        down = nn.functional.dropout(down, p=self.dropout, training=self.training)
+        down = self.cbp1(down)
+        # down = nn.functional.dropout(down, p=self.dropout, training=self.training)
         up = self.up_proj(down)
 
         up = up * self.scale
