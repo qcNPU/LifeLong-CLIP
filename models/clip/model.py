@@ -246,7 +246,8 @@ class ResidualAttentionBlock_prefix(ResidualAttentionBlock):
         super().__init__(d_model, n_head, attn_mask)
 
         # 将 attention 模块替换成加入 prompt 的
-        self.attn = PreT_Attention(d_model, n_head)
+        # self.attn = PreT_Attention(d_model, n_head)
+        self.attn = Attention_CODA(d_model, n_head)
 
     def forward(self, x: torch.Tensor, prompt=None):
         x = x + self.attn(self.ln_1(x), prompt)
@@ -622,6 +623,58 @@ class PreT_Attention(nn.Module):
         return x
 
 
+class Attention_CODA(nn.Module):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
+        self.scale = qk_scale or head_dim ** -0.5
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+        self.attn_gradients = None
+        self.attention_map = None
+
+    def save_attn_gradients(self, attn_gradients):
+        self.attn_gradients = attn_gradients
+
+    def get_attn_gradients(self):
+        return self.attn_gradients
+
+    def save_attention_map(self, attention_map):
+        self.attention_map = attention_map
+
+    def get_attention_map(self):
+        return self.attention_map
+
+    def forward(self, x, register_hook=False, prompt=None):
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
+
+        if prompt is not None:
+            pk, pv = prompt
+            pk = pk.reshape(B, -1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+            pv = pv.reshape(B, -1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+            k = torch.cat((pk, k), dim=2)
+            v = torch.cat((pv, v), dim=2)
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        if register_hook:
+            self.save_attention_map(attn)
+            attn.register_hook(self.save_attn_gradients)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
 class VisualTransformer(nn.Module):
 
     def __init__(self,
@@ -699,7 +752,7 @@ class VisualTransformer(nn.Module):
         x = x + self.positional_embedding.to(x.dtype)  # input,output:(32,257,1024),position:(257,1024)
 
         prompt_loss = torch.zeros((1,), requires_grad=True).cuda()
-        for i, blk in enumerate(self.blocks):
+        for i, blk in enumerate(self.transformer.resblocks):
 
             if prompt_module is not None:
                 if train:
