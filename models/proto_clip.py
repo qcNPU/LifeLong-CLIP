@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from typing import Union, List
 
 import torch
@@ -5,8 +6,21 @@ import torch.nn as nn
 
 from .adapter_clip import AdapterCLIP
 from .clip.tokenizer import SimpleTokenizer as _Tokenizer
+from .clip.zoo import CoPLPrompt
 
 _tokenizer = _Tokenizer()
+
+
+class MetaNet(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(MetaNet, self).__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        x = nn.ReLU(self.fc1(x))
+        x = self.fc2(x)
+        return x
 
 
 class CUSTOM_CLIP(AdapterCLIP):
@@ -16,7 +30,8 @@ class CUSTOM_CLIP(AdapterCLIP):
         self.n_class = None
         self.args = args
         super(CUSTOM_CLIP, self).__init__(model_name=args.model_name, device=device,
-                                          peft_method='adapter',
+                                          # peft_method='adapter',
+                                          peft_method='prefix_prompt',
                                           peft_encoder=args.peft_encoder)
         clip_model = self.model
         self.dtype = clip_model.dtype
@@ -28,7 +43,7 @@ class CUSTOM_CLIP(AdapterCLIP):
         self.num_prompt = args.num_prompt
         self.n_ctx = args.n_ctx
         self.prompt_prefix = ' '.join(['x'] * self.n_ctx * self.args.topK)
-        self.prom_ctx_dim = clip_model.ln_final.weight.shape[0]# =feature_dim
+        self.prom_ctx_dim = clip_model.ln_final.weight.shape[0]  # =feature_dim
         if 'prompt' in self.args.model_type:
             # ctx_dim = clip_model.ln_final.weight.shape[0]
             ctx_dim = self.feature_dim
@@ -54,16 +69,30 @@ class CUSTOM_CLIP(AdapterCLIP):
 
         self.image_encoder = clip_model.visual
         self.dtype = self.image_encoder.conv1.weight.dtype
+        # self.meta_net = MetaNet(512, (512 // 16), 512)
+        self.meta_net = nn.Sequential(OrderedDict([
+            ("linear1", nn.Linear(self.feature_dim, self.feature_dim // 16)),
+            ("relu", nn.ReLU(inplace=True)),
+            ("linear2", nn.Linear(self.feature_dim // 16, self.feature_dim))]))
+        self.prompt_module = CoPLPrompt(768, 10, [100, 8, 0.0])
 
     def forward(self, image, labels=None, test_class=None, train=True, image_is_feature=False):
+
         # 1. vision feature入参分为图片和采样特征两种
         if image_is_feature:
             image_features = image
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         else:
-            image_features = self.image_encoder(image.type(self.dtype))  # image:(32,3,32,32)
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            # 1.获取 patch 经 image encoder 之后的 patch feature
+            with torch.no_grad():
+                patch_features = self.image_encoder.get_patch_feature(image)#batch,196,768
+            # 2.获取 patch conditional token
+            patch_tokens = self.meta_net(patch_features)
+            # 3.将 patch_token传入，与 prompt 做对齐和加权，再拼接到 attention 的 k v 上，得到最终 image feature
+            image_features = self.image_encoder(x=image, prompt=self.prompt_module, q=patch_tokens, train=train,
+                                                task_id=None)
             # 使用 .detach() 会返回一个新的张量，这个张量与原始张量共享数据，但不会参与梯度计算。调用 .item() 或 .numpy() 会从张量中提取数据，这些数据不再与计算图关联。
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         batch = image_features.shape[0]
         if train:
             if 'prompt' in self.args.model_type:  # image encoder中有adapter，text端输入为text prompt
@@ -161,21 +190,22 @@ class PromptLearner(nn.Module):
         self.token_prefix = None
         self.token_suffix = None
 
-    def forward(self, ctx, train=True): #已审，代码没问题
+    def forward(self, ctx, train=True):  # 已审，代码没问题
         batch = ctx.shape[0]
         # ctx=self.text_prompt[indices].view(batch, self.n_ctx*self.args.topK, self.ctx_dim)#self.text_prompt[indices]=(batch,3,12,768)->(batch,36,768)
         tokenized_prompts = self.tokenized_prompts.view(self.n_cls, -1)
         n_cls = self.n_cls
 
         if self.prompt_pos == 2:
-            prefix = self.token_prefix.unsqueeze(0).repeat(batch,1,1,1)
-            suffix = self.token_suffix.unsqueeze(0).repeat(batch,1,1,1)
+            prefix = self.token_prefix.unsqueeze(0).repeat(batch, 1, 1, 1)
+            suffix = self.token_suffix.unsqueeze(0).repeat(batch, 1, 1, 1)
             ctx = ctx.unsqueeze(1).repeat(1, n_cls, 1, 1)
-            prompts = torch.cat([prefix, ctx, suffix],dim=2)
+            prompts = torch.cat([prefix, ctx, suffix], dim=2)
 
         # 维度2的尺寸不是1，所以squeeze函数不会起效
-        prompts = prompts.squeeze(2).view(batch*self.n_cls, -1, self.ctx_dim)#(batch,cls,77,768)->(batch*cls,77,768)
-        tokenized_prompts = tokenized_prompts.unsqueeze(0).repeat(batch,1,1).view(batch*self.n_cls, -1)
+        prompts = prompts.squeeze(2).view(batch * self.n_cls, -1,
+                                          self.ctx_dim)  # (batch,cls,77,768)->(batch*cls,77,768)
+        tokenized_prompts = tokenized_prompts.unsqueeze(0).repeat(batch, 1, 1).view(batch * self.n_cls, -1)
         # self.prompts = prompts
         # self.prompts_token = tokenized_prompts
         if train:
