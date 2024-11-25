@@ -429,7 +429,7 @@ class _Trainer():
         test_sampler = OnlineTestSampler(self.test_dataset,
                                          self.exposed_classes)
         test_dataloader = DataLoader(self.test_dataset,
-                                     batch_size=self.test_batchsize if task_id>6 else self.test_batchsize*2,
+                                     batch_size=self.test_batchsize if task_id>5 else self.test_batchsize*2,
                                      sampler=test_sampler,
                                      num_workers=self.n_worker)
         eval_dict = self.online_evaluate(test_dataloader, 1000)

@@ -11,7 +11,6 @@ from torch.distributions.normal import Normal
 from .sparse_dispatcher import SparseDispatcher
 from .adapter import Adapter
 from .lora import MultiheadAttention as LoRAMultiheadAttention
-from .zoo import CoPLPrompt
 
 
 class Bottleneck(nn.Module):
@@ -251,6 +250,7 @@ class ResidualAttentionBlock_prefix(ResidualAttentionBlock):
 
     def forward(self, x: torch.Tensor, register_hook=False, prompt=None):
         x = x + self.attn(x=self.ln_1(x), register_hook=register_hook,prompt=prompt)
+        # x = x + self.attention(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -544,33 +544,6 @@ class Transformer(nn.Module):
         return self.resblocks(x)
 
 
-class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
-        super().__init__()
-        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x, *args):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
-
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
 
 class PreT_Attention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
@@ -733,7 +706,11 @@ class VisualTransformer(nn.Module):
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD(batch,197,768)
 
-        x = self.ln_post(x[:, 1:, :])# batch,196,768)
+        # for i, blk in enumerate(self.transformer.resblocks):
+        #     x = blk(x)
+
+
+        x = self.ln_post(x)# batch,196,768)
         # x = self.ln_post(x[:, 0, :])# batch,768)
 
         # if self.proj is not None:
@@ -753,6 +730,7 @@ class VisualTransformer(nn.Module):
         x = x + self.positional_embedding.to(x.dtype)  # batch,197,768
 
         x = self.ln_pre(x)
+        # x = x.permute(1, 0, 2)  # NLD -> LND
         prompt_loss = torch.zeros((1,), requires_grad=True).cuda()
         for i, blk in enumerate(self.transformer.resblocks):
 
@@ -767,7 +745,7 @@ class VisualTransformer(nn.Module):
 
             x = blk(x, register_blk == i, prompt=p_list)
 
-
+        # x = x.permute(1, 0, 2)  # LND -> NLD(batch,197,768)
         x = self.ln_post(x[:, 0, :])
         if self.proj is not None:
             x = x @ self.proj
@@ -871,6 +849,45 @@ class CLIP(nn.Module):
         if self.text_projection is not None:
             nn.init.normal_(self.text_projection,
                             std=self.transformer.width ** -0.5)
+
+    def load_pretrain(self,state_dict):
+        checkpoint= state_dict
+        # rename the keys in checkpoint
+        clip_weight_dict = {'in_proj_weight': 'qkv.weight',
+                            'in_proj_bias': 'qkv.bias',
+                            'out_proj.weight': 'proj.weight',
+                            'out_proj.bias': 'proj.bias'}
+
+        weight_key = list(checkpoint.keys())
+
+        for k in weight_key:
+            for clip_k, new_k in clip_weight_dict.items():
+                if clip_k in k:
+                    checkpoint[k.replace(clip_k, new_k)] = checkpoint.pop(k)
+                    continue
+
+        return checkpoint
+
+
+    def key_replace(self,state_dict):
+        for key in list(state_dict.keys()):
+            if 'qkv.weight' in key:
+                qkv_weight = state_dict.pop(key)
+                q_weight = qkv_weight[:768]
+                k_weight = qkv_weight[768:768 * 2]
+                v_weight = qkv_weight[768 * 2:]
+                state_dict[key.replace('qkv.weight', 'q_proj.weight')] = q_weight
+                state_dict[key.replace('qkv.weight', 'k_proj.weight')] = k_weight
+                state_dict[key.replace('qkv.weight', 'v_proj.weight')] = v_weight
+            elif 'qkv.bias' in key:
+                qkv_bias = state_dict.pop(key)
+                q_bias = qkv_bias[:768]
+                k_bias = qkv_bias[768:768 * 2]
+                v_bias = qkv_bias[768 * 2:]
+                state_dict[key.replace('qkv.bias', 'q_proj.bias')] = q_bias
+                state_dict[key.replace('qkv.bias', 'k_proj.bias')] = k_bias
+                state_dict[key.replace('qkv.bias', 'v_proj.bias')] = v_bias
+        return state_dict
 
     def build_attention_mask(self):
         # lazily create causal attention mask, with full attention between the vision tokens
@@ -1001,8 +1018,15 @@ def build_model(state_dict: dict, design_details: dict):
         if key in state_dict:
             del state_dict[key]
 
+    state_dict = model.load_pretrain(state_dict)#让 attention 模块参数加载进来
+
     # 这里没有convert_weights方法
-    model.load_state_dict(state_dict, strict=False)
+    state = model.load_state_dict(state_dict, strict=False)
+    # state = model.load_state_dict(state_dict)
     for p in model.parameters():
         p.data = p.data.float()
     return model.eval()
+
+
+
+

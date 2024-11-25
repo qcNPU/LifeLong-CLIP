@@ -7,6 +7,7 @@ import torch.nn as nn
 from .adapter_clip import AdapterCLIP
 from .clip.tokenizer import SimpleTokenizer as _Tokenizer
 from .clip.zoo import CoPLPrompt
+import math
 
 _tokenizer = _Tokenizer()
 
@@ -15,10 +16,16 @@ class MetaNet(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(MetaNet, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.non_linear_func = nn.ReLU()
         self.fc2 = nn.Linear(hidden_dim, output_dim)
+        with torch.no_grad():
+            nn.init.kaiming_uniform_(self.fc1.weight, a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.fc2.weight, a=math.sqrt(5))
+            nn.init.zeros_(self.fc1.bias)
+            nn.init.zeros_(self.fc2.bias)
 
     def forward(self, x):
-        x = nn.ReLU(self.fc1(x))
+        x = self.non_linear_func(self.fc1(x))
         x = self.fc2(x)
         return x
 
@@ -69,12 +76,8 @@ class CUSTOM_CLIP(AdapterCLIP):
 
         self.image_encoder = clip_model.visual
         self.dtype = self.image_encoder.conv1.weight.dtype
-        # self.meta_net = MetaNet(512, (512 // 16), 512)
         prompt_dim = 768
-        self.meta_net = nn.Sequential(OrderedDict([
-            ("linear1", nn.Linear(prompt_dim, prompt_dim // 16)),
-            ("relu", nn.ReLU(inplace=True)),
-            ("linear2", nn.Linear(prompt_dim // 16, prompt_dim))]))
+        # self.meta_net = MetaNet(prompt_dim, (prompt_dim // 16), prompt_dim)
         self.prompt_module = CoPLPrompt(768, 10, [100, 8, 0.0])
 
     def forward(self, image, labels=None, test_class=None, train=True, image_is_feature=False):#image(batch,3,224,224)
@@ -88,7 +91,8 @@ class CUSTOM_CLIP(AdapterCLIP):
             with torch.no_grad():
                 patch_features = self.image_encoder.get_patch_feature(image)#batch,196,768
             # 2.获取 patch conditional token
-            patch_tokens = self.meta_net(patch_features)#batch,196,768
+            # patch_tokens = self.meta_net(patch_features)#batch,196,768
+            patch_tokens = patch_features
             # 3.将 patch_token传入，与 prompt 做对齐和加权，再拼接到 attention 的 k v 上，得到最终 image feature
             image_features = self.image_encoder(x=image, prompt_module=self.prompt_module, q=patch_tokens, train=train,
                                                 task_id=None)

@@ -64,7 +64,7 @@ class Trainer_ProtoCLIP(_Trainer):
         model._total_classes = self._total_classes
         # Freeze some parameters
         for k, v in model.named_parameters():
-            if "adaptmlp" in k or "lora" in k or "text_key" in k or "text_prompt" in k:
+            if "adaptmlp" in k or "lora" in k or "text_key" in k or "text_prompt" in k or "meta_net" in k or "prompt_module" in k:
                 v.requires_grad = True
             else:
                 v.requires_grad = False
@@ -79,6 +79,15 @@ class Trainer_ProtoCLIP(_Trainer):
         logging.info(f"Parameters to be updated: {sorted(enabled)}")
         self.reset_opt(model)
         self.compute_old_embedding()
+
+        # increment task id in prompting modules
+        if task_id > 0:
+            try:
+                if self.custom_clip.module.prompt_module is not None:
+                    self.custom_clip.module.prompt_module.process_task_count()
+            except:
+                if self.custom_clip.prompt_module is not None:
+                    self.custom_clip.prompt_module.process_task_count()
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)  # 将新出现的classname加入到self.exposed_class和_names变量中
@@ -433,7 +442,7 @@ class Trainer_ProtoCLIP(_Trainer):
         return displacement
 
     def _stage2_compact_classifier(self, task_size, ca_epochs=5):
-        lr = 5e-3
+        lr = 2e-2
         self.logit_norm = None
         model = self.custom_clip.module if self.distributed else self.custom_clip
         isprompt = 'prompt' in self.model_type
