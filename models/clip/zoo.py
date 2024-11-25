@@ -135,7 +135,6 @@ class CoPLPrompt(nn.Module):
         e_valid = False
         if l in self.e_layers:
             e_valid = True
-            B, C = x_querry.shape
 
             K = getattr(self,f'e_k_{l}')
             A = getattr(self,f'e_a_{l}')

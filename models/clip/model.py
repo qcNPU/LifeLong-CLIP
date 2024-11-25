@@ -249,8 +249,8 @@ class ResidualAttentionBlock_prefix(ResidualAttentionBlock):
         # self.attn = PreT_Attention(d_model, n_head)
         self.attn = Attention_CODA(d_model, n_head)
 
-    def forward(self, x: torch.Tensor, prompt=None):
-        x = x + self.attn(self.ln_1(x), prompt)
+    def forward(self, x: torch.Tensor, register_hook=False, prompt=None):
+        x = x + self.attn(x=self.ln_1(x), register_hook=register_hook,prompt=prompt)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -650,7 +650,7 @@ class Attention_CODA(nn.Module):
         return self.attention_map
 
     def forward(self, x, register_hook=False, prompt=None):
-        B, N, C = x.shape
+        B, N, C = x.shape # B是batch，N是patchNum +1，C就是特征维度，目前x是batch，197,768
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
 
@@ -706,7 +706,7 @@ class VisualTransformer(nn.Module):
         self.positional_embedding = nn.Parameter(scale * torch.randn(
             (input_resolution // patch_size) ** 2 + 1, width))
         self.ln_pre = LayerNorm(width)
-        self.prompt_module = CoPLPrompt(768, 100, 8)
+        # self.prompt_module = CoPLPrompt(768, 100, 8)
 
         self.transformer = Transformer(width,
                                        layers,
@@ -731,26 +731,28 @@ class VisualTransformer(nn.Module):
 
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = x.permute(1, 0, 2)  # LND -> NLD(batch,197,768)
 
-        x = self.ln_post(x[:, 1:, :])
+        # x = self.ln_post(x[:, 1:, :])
+        x = self.ln_post(x[:, 0, :])
 
         # if self.proj is not None:
         #     x = x @ self.proj
 
         return x
 
-    def forward(self, x, prompt_module, register_blk=-1, q=None, train=False, task_id=None):
+    def forward(self, x, prompt_module=None, register_blk=-1, q=None, train=False, task_id=None):
         x = self.conv1(x)
         x = x.reshape(x.shape[0], x.shape[1], -1)
-        x = x.permute(0, 2, 1)
+        x = x.permute(0, 2, 1)#batch,196,768
         x = torch.cat([
             self.class_embedding.to(x.dtype) + torch.zeros(
                 x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x
         ],
-            dim=1)  # shape = [*, grid ** 2 + 1, width]
-        x = x + self.positional_embedding.to(x.dtype)  # input,output:(32,257,1024),position:(257,1024)
+            dim=1)  # shape = [*, grid ** 2 + 1, width]  batch,197,768
+        x = x + self.positional_embedding.to(x.dtype)  # batch,197,768
 
+        x = self.ln_pre(x)
         prompt_loss = torch.zeros((1,), requires_grad=True).cuda()
         for i, blk in enumerate(self.transformer.resblocks):
 
@@ -766,12 +768,7 @@ class VisualTransformer(nn.Module):
             x = blk(x, register_blk == i, prompt=p_list)
 
 
-
-        x = self.ln_pre(x)
-        x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        x = self.ln_post(x[:, 0, :])  # 不需要 cls token 的部分应该
+        x = self.ln_post(x[:, 0, :])
         if self.proj is not None:
             x = x @ self.proj
 
