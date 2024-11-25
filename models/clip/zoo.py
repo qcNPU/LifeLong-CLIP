@@ -33,20 +33,23 @@ class CoPLPrompt(nn.Module):
             p = self.gram_schmidt(p)
             k = self.gram_schmidt(k)
             a = self.gram_schmidt(a)
-            setattr(self, f'e_p_{e}',p)
-            setattr(self, f'e_k_{e}',k)
-            setattr(self, f'e_a_{e}',a)
+            setattr(self, f'e_p_{e}', p)
+            setattr(self, f'e_k_{e}', k)
+            setattr(self, f'e_a_{e}', a)
+            # 拼接权重矩阵 W_a
+            W_a = torch.nn.Linear(emb_d * 2, 1)
+            setattr(self, f'e_w_{e}', W_a)
 
     def _init_smart(self, emb_d, prompt_param):
 
         # prompt basic param
         self.e_pool_size = int(prompt_param[0])
         self.e_p_length = int(prompt_param[1])
-        self.e_layers = [0,1,2,3,4]
+        self.e_layers = [0, 1, 2, 3, 4]
 
         # strenth of ortho penalty
         self.ortho_mu = prompt_param[2]
-        
+
     def process_task_count(self):
         self.task_count += 1
 
@@ -59,15 +62,15 @@ class CoPLPrompt(nn.Module):
         # code for this function is modified from:
         # https://github.com/legendongary/pytorch-gram-schmidt/blob/master/gram_schmidt.py
         for e in self.e_layers:
-            K = getattr(self,f'e_k_{e}')
-            A = getattr(self,f'e_a_{e}')
-            P = getattr(self,f'e_p_{e}')
+            K = getattr(self, f'e_k_{e}')
+            A = getattr(self, f'e_a_{e}')
+            P = getattr(self, f'e_p_{e}')
             k = self.gram_schmidt(K)
             a = self.gram_schmidt(A)
             p = self.gram_schmidt(P)
-            setattr(self, f'e_p_{e}',p)
-            setattr(self, f'e_k_{e}',k)
-            setattr(self, f'e_a_{e}',a)
+            setattr(self, f'e_p_{e}', p)
+            setattr(self, f'e_k_{e}', k)
+            setattr(self, f'e_a_{e}', a)
 
     # code for this function is modified from:
     # https://github.com/legendongary/pytorch-gram-schmidt/blob/master/gram_schmidt.py
@@ -85,7 +88,7 @@ class CoPLPrompt(nn.Module):
         is_3d = len(vv.shape) == 3
         if is_3d:
             shape_2d = copy.deepcopy(vv.shape)
-            vv = vv.view(vv.shape[0],-1)
+            vv = vv.view(vv.shape[0], -1)
 
         # swap rows and columns
         vv = vv.T
@@ -104,7 +107,7 @@ class CoPLPrompt(nn.Module):
             redo = True
             while redo:
                 redo = False
-                vk = torch.randn_like(vv[:,k]).to(vv.device)
+                vk = torch.randn_like(vv[:, k]).to(vv.device)
                 uk = 0
                 for j in range(0, k):
                     if not redo:
@@ -121,34 +124,35 @@ class CoPLPrompt(nn.Module):
             uu[:, k] = uk / (uk.norm())
 
         # undo swapping of rows and columns
-        uu = uu.T 
+        uu = uu.T
 
         # return from 2D
         if is_3d:
             uu = uu.view(shape_2d)
-        
-        return torch.nn.Parameter(uu) 
+
+        return torch.nn.Parameter(uu)
 
     def forward(self, x_querry, l, x_block, train=False, task_id=None):
-
+        #这里的 x_querry就是 patch_token
         # e prompts
         e_valid = False
         if l in self.e_layers:
             e_valid = True
 
-            K = getattr(self,f'e_k_{l}')
-            A = getattr(self,f'e_a_{l}')
-            p = getattr(self,f'e_p_{l}')
+            K = getattr(self, f'e_k_{l}')
+            A = getattr(self, f'e_a_{l}')
+            p = getattr(self, f'e_p_{l}')
+            W_a = getattr(self, f'e_w_{l}')
             pt = int(self.e_pool_size / (self.n_tasks))
             s = int(self.task_count * pt)
             f = int((self.task_count + 1) * pt)
-            
+
             # freeze/control past tasks
             if train:
                 if self.task_count > 0:
-                    K = torch.cat((K[:s].detach().clone(),K[s:f]), dim=0)
-                    A = torch.cat((A[:s].detach().clone(),A[s:f]), dim=0)
-                    p = torch.cat((p[:s].detach().clone(),p[s:f]), dim=0)
+                    K = torch.cat((K[:s].detach().clone(), K[s:f]), dim=0)
+                    A = torch.cat((A[:s].detach().clone(), A[s:f]), dim=0)
+                    p = torch.cat((p[:s].detach().clone(), p[s:f]), dim=0)
                 else:
                     K = K[s:f]
                     A = A[s:f]
@@ -158,25 +162,29 @@ class CoPLPrompt(nn.Module):
                 A = A[0:f]
                 p = p[0:f]
 
+
+            context_vectors = self.align_patch_and_prompt(prompt_keys=K, prompt_vectors=p,patch_tokens=x_querry,W_a=W_a)
+            P_ = context_vectors
+
             # with attention and cosine sim
             # (b x 1 x d) * soft([1 x k x d]) = (b x k x d) -> attention = k x d
-            a_querry = torch.einsum('bd,kd->bkd', x_querry, A)
-            # # (b x k x d) - [1 x k x d] = (b x k) -> key = k x d
-            n_K = nn.functional.normalize(K, dim=1)
-            q = nn.functional.normalize(a_querry, dim=2)
-            aq_k = torch.einsum('bkd,kd->bk', q, n_K)
-            # (b x 1 x k x 1) * [1 x plen x k x d] = (b x plen x d) -> prompt = plen x k x d
-            P_ = torch.einsum('bk,kld->bld', aq_k, p)
+            # a_querry = torch.einsum('bd,kd->bkd', x_querry, A)
+            # # # (b x k x d) - [1 x k x d] = (b x k) -> key = k x d
+            # n_K = nn.functional.normalize(K, dim=1)
+            # q = nn.functional.normalize(a_querry, dim=2)
+            # aq_k = torch.einsum('bkd,kd->bk', q, n_K)
+            # # (b x 1 x k x 1) * [1 x plen x k x d] = (b x plen x d) -> prompt = plen x k x d
+            # P_ = torch.einsum('bk,kld->bld', aq_k, p)
 
             # select prompts
-            i = int(self.e_p_length/2)
-            Ek = P_[:,:i,:]
-            Ev = P_[:,i:,:]
+            i = int(self.e_p_length / 2)
+            Ek = P_[:, :i, :]
+            Ev = P_[:, i:, :]
 
             # ortho penalty
             if train and self.ortho_mu > 0:
                 loss = ortho_penalty(K) * self.ortho_mu
-                loss += ortho_penalty(A) * self.ortho_mu
+                # loss += ortho_penalty(A) * self.ortho_mu
                 loss += ortho_penalty(p.view(p.shape[0], -1)) * self.ortho_mu
             else:
                 loss = 0
@@ -192,16 +200,52 @@ class CoPLPrompt(nn.Module):
         # return
         return p_return, loss, x_block
 
+    def align_patch_and_prompt(self, prompt_keys = None, prompt_vectors=None, patch_tokens=None,feature_dim=768,W_a=None):
+        '''
+        将 prompt 与 patch conditional token 一一对齐，再加权，得到最终的上下文 prompt
+        :param prompt:
+        :param patch:
+        :return:
+        '''
+        batch_size = patch_tokens.shape[0]
+        num_patches = patch_tokens.shape[1]
+        num_prompts = prompt_keys.shape[0]
+
+
+
+        # 扩展维度以进行拼接
+        patch_expanded = patch_tokens.unsqueeze(2).repeat(1, 1, num_prompts,
+                                                          1)  # (batch, patches, prompts, feature_dim)
+        prompt_expanded = prompt_keys.unsqueeze(0).unsqueeze(0).repeat(batch_size, num_patches, 1,
+                                                                          1)  # (batch, patches, prompts, feature_dim)
+
+        # 拼接 (batch, patches, prompts, feature_dim * 2)
+        sp_vi_concat = torch.cat([patch_expanded, prompt_expanded], dim=-1)
+
+        # 计算注意力分数
+        scores = torch.tanh(W_a(sp_vi_concat)).squeeze(-1)  # (batch, patches, prompts)
+
+        # 归一化注意力分数
+        attention_weights = torch.softmax(scores, dim=-1)  # (batch, patches, prompts)
+
+        # 公式 (5)：加权求和生成上下文向量
+        context_vectors = torch.einsum('bpn,nf->bpf', attention_weights, prompt_vectors)
+
+        print("Context Vectors Shape:", context_vectors.shape)  # (batch, patches, feature_dim)
+
+        return context_vectors
+
+
 def ortho_penalty(t):
-    return ((t @t.T - torch.eye(t.shape[0]).cuda())**2).mean()
+    return ((t @ t.T - torch.eye(t.shape[0]).cuda()) ** 2).mean()
 
 
 # note - ortho init has not been found to help l2p/dual prompt
 def tensor_prompt(a, b, c=None, ortho=False):
     if c is None:
-        p = torch.nn.Parameter(torch.FloatTensor(a,b), requires_grad=True)
+        p = torch.nn.Parameter(torch.FloatTensor(a, b), requires_grad=True)
     else:
-        p = torch.nn.Parameter(torch.FloatTensor(a,b,c), requires_grad=True)
+        p = torch.nn.Parameter(torch.FloatTensor(a, b, c), requires_grad=True)
     if ortho:
         nn.init.orthogonal_(p)
     else:

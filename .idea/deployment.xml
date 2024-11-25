@@ -1,15 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="3090_all" createEmptyFolders="true" remoteFilesAllowedToDisappearOnAutoupload="false" confirmBeforeUploading="false" autoUploadExternalChanges="true">
+  <component name="PublishConfigData" autoUpload="Always" serverName="qc@10.68.44.250:10165 password" createEmptyFolders="true" remoteFilesAllowedToDisappearOnAutoupload="false" confirmBeforeUploading="false" autoUploadExternalChanges="true">
     <option name="confirmBeforeUploading" value="false" />
     <serverData>
-      <paths name="2090_all">
-        <serverdata>
-          <mappings>
-            <mapping deploy="/home/qc/project" local="$PROJECT_DIR$/.." web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
       <paths name="3090_all">
         <serverdata>
           <mappings>
@@ -17,10 +10,10 @@
           </mappings>
         </serverdata>
       </paths>
-      <paths name="attriclip_3090">
+      <paths name="qc@10.68.44.250:10165 password">
         <serverdata>
           <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/home/qc/project" local="$PROJECT_DIR$/../../.." />
           </mappings>
         </serverdata>
       </paths>

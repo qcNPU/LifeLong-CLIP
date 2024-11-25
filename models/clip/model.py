@@ -733,13 +733,13 @@ class VisualTransformer(nn.Module):
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD(batch,197,768)
 
-        # x = self.ln_post(x[:, 1:, :])
-        x = self.ln_post(x[:, 0, :])
+        x = self.ln_post(x[:, 1:, :])# batch,196,768)
+        # x = self.ln_post(x[:, 0, :])# batch,768)
 
         # if self.proj is not None:
         #     x = x @ self.proj
 
-        return x
+        return x  #就是下面的 q
 
     def forward(self, x, prompt_module=None, register_blk=-1, q=None, train=False, task_id=None):
         x = self.conv1(x)
