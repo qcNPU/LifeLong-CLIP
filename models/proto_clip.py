@@ -77,7 +77,7 @@ class CUSTOM_CLIP(AdapterCLIP):
         self.image_encoder = clip_model.visual
         self.dtype = self.image_encoder.conv1.weight.dtype
         prompt_dim = 768
-        # self.meta_net = MetaNet(prompt_dim, (prompt_dim // 16), prompt_dim)
+        self.meta_net = MetaNet(prompt_dim, (prompt_dim // 16), prompt_dim)
         self.prompt_module = CoPLPrompt(768, 10, [100, 8, 0.0])
 
     def forward(self, image, labels=None, test_class=None, train=True, image_is_feature=False):#image(batch,3,224,224)
@@ -90,11 +90,11 @@ class CUSTOM_CLIP(AdapterCLIP):
             # 1.获取 patch 经 image encoder 之后的 patch feature
             with torch.no_grad():
                 patch_features = self.image_encoder.get_patch_feature(image)#batch,196,768
+                q = patch_features[:,0,:]
             # 2.获取 patch conditional token
-            # patch_tokens = self.meta_net(patch_features)#batch,196,768
-            patch_tokens = patch_features
+            patch_tokens = self.meta_net(patch_features[:,1:,:])#batch,196,768
             # 3.将 patch_token传入，与 prompt 做对齐和加权，再拼接到 attention 的 k v 上，得到最终 image feature
-            image_features = self.image_encoder(x=image, prompt_module=self.prompt_module, q=patch_tokens, train=train,
+            image_features = self.image_encoder(x=image, prompt_module=self.prompt_module, q=q,patch_tokens=patch_tokens, train=train,
                                                 task_id=None)
             # 使用 .detach() 会返回一个新的张量，这个张量与原始张量共享数据，但不会参与梯度计算。调用 .item() 或 .numpy() 会从张量中提取数据，这些数据不再与计算图关联。
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)

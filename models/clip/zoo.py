@@ -178,7 +178,7 @@ class CoPLPrompt(nn.Module):
             # (b x 1 x k x 1) * [1 x plen x k x d] = (b x plen x d) -> prompt = plen x k x d
             P_ = torch.einsum('bk,kld->bld', aq_k, p)#batch,10  10,8,768  ->batch,8,768
 
-            # P_ = self.align_patch_and_prompt( prompt_vectors=P_, patch_tokens=x_querry[:,1:,:],W_a=W_a)
+            P_ = self.align_patch_and_prompt( prompt_vectors=P_, patch_tokens=x_querry[:,1:,:],W_a=W_a)
 
             # select prompts
             i = int(self.e_p_length / 2)

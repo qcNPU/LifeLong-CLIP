@@ -718,7 +718,7 @@ class VisualTransformer(nn.Module):
 
         return x  #就是下面的 q
 
-    def forward(self, x, prompt_module=None, register_blk=-1, q=None, train=False, task_id=None):
+    def forward(self, x, prompt_module=None, register_blk=-1, q=None,patch_token=None, train=False, task_id=None):
         x = self.conv1(x)
         x = x.reshape(x.shape[0], x.shape[1], -1)
         x = x.permute(0, 2, 1)#batch,196,768
