@@ -5,7 +5,7 @@ def base_parser():
     parser = argparse.ArgumentParser(description="Class Incremental Learning Research")
 
     # Method and Exp. Settings.
-    parser.add_argument("--method", type=str, default="adapter-clip-proto_prompt", choices=["adapter-clip","adapter-clip-proto_prompt",], help="Select CIL method",)
+    parser.add_argument("--method", type=str, default="template", choices=["template","adapter-clip","adapter-clip-proto_prompt",], help="Select CIL method",)
     parser.add_argument("--dataset", type=str, default="cifar100", help="[mnist, cifar10, cifar100, imagenet]",)
     parser.add_argument("--n_tasks", type=int, default=10, help="The number of tasks")
     parser.add_argument("--epochNum", type=int, default=6, help="The number of tasks")

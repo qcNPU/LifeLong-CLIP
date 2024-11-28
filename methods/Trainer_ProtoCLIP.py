@@ -185,7 +185,16 @@ class Trainer_ProtoCLIP(_Trainer):
 
 
     def online_after_task(self, task_id):
-        self.stage1_and_stage2()
+        # 二阶段微调和 test 都用的是所有 seen class
+        logging.info(f"after stage 1,total_classes_names:{self.all_classnames[:self._total_classes]}")
+        if self.distributed:
+            self.custom_clip.module.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
+        else:
+            self.custom_clip.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
+
+        # 目前 class Prototype和二阶段微调都是为 prompt 而存在的，没有 prompt 就不需要了
+        if "prompt" in self.method:
+            self.stage1_and_stage2()
 
     def online_evaluate(self, test_loader, samples_cnt):
         total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
@@ -266,12 +275,6 @@ class Trainer_ProtoCLIP(_Trainer):
         # 4. 计算新task 新数据的prototype
         self._compute_class_mean(check_diff=False, oracle=False, task_id=self.task_id)  # 平均耗时6min
 
-        # 重新设置 prompt token 为所有 seen class
-        logging.info(f"after stage 1,total_classes_names:{self.all_classnames[:self._total_classes]}")
-        if self.distributed:
-            self.custom_clip.module.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
-        else:
-            self.custom_clip.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
         # 5. 根据漂移重新训练Classifier
         if self.task_id > 0 and self.ca_epochs > 0 and self.ca is True:
             torch.cuda.empty_cache()
