@@ -39,18 +39,18 @@ class CoPLPrompt(nn.Module):
             setattr(self, f'e_k_{e}', k)
             setattr(self, f'e_a_{e}', a)
             # 拼接权重矩阵 W_a
-            W_a = torch.nn.Linear(emb_d * 2, 1)
-            with torch.no_grad():
-                nn.init.xavier_normal_(W_a.weight)
-                nn.init.zeros_(W_a.bias)
-            setattr(self, f'e_w_{e}', W_a)
+            # W_a = torch.nn.Linear(emb_d * 2, 1)
+            # with torch.no_grad():
+            #     nn.init.xavier_normal_(W_a.weight)
+            #     nn.init.zeros_(W_a.bias)
+            # setattr(self, f'e_w_{e}', W_a)
 
     def _init_smart(self, emb_d, prompt_param):
 
         # prompt basic param
         self.e_pool_size = int(prompt_param[0])
         self.e_p_length = int(prompt_param[1])
-        self.e_layers = [0, 1, 2, 3, 4]
+        self.e_layers = [0, 1, 2, 3, 4,5,6]
 
         # strenth of ortho penalty
         self.ortho_mu = prompt_param[2]
@@ -77,65 +77,7 @@ class CoPLPrompt(nn.Module):
             setattr(self, f'e_k_{e}', k)
             setattr(self, f'e_a_{e}', a)
 
-    # code for this function is modified from:
-    # https://github.com/legendongary/pytorch-gram-schmidt/blob/master/gram_schmidt.py
-    def gram_schmidt(self, vv):
 
-        def projection(u, v):
-            denominator = (u * u).sum()
-
-            if denominator < 1e-8:
-                return None
-            else:
-                return (v * u).sum() / denominator * u
-
-        # check if the tensor is 3D and flatten the last two dimensions if necessary
-        is_3d = len(vv.shape) == 3
-        if is_3d:
-            shape_2d = copy.deepcopy(vv.shape)
-            vv = vv.view(vv.shape[0], -1)
-
-        # swap rows and columns
-        vv = vv.T
-
-        # process matrix size
-        nk = vv.size(1)
-        uu = torch.zeros_like(vv, device=vv.device)
-
-        # get starting point
-        pt = int(self.e_pool_size / (self.n_tasks))
-        s = int(self.task_count * pt)
-        f = int((self.task_count + 1) * pt)
-        if s > 0:
-            uu[:, 0:s] = vv[:, 0:s].clone()
-        for k in range(s, f):
-            redo = True
-            while redo:
-                redo = False
-                vk = torch.randn_like(vv[:, k]).to(vv.device)
-                uk = 0
-                for j in range(0, k):
-                    if not redo:
-                        uj = uu[:, j].clone()
-                        proj = projection(uj, vk)
-                        if proj is None:
-                            redo = True
-                            print('restarting!!!')
-                        else:
-                            uk = uk + proj
-                if not redo: uu[:, k] = vk - uk
-        for k in range(s, f):
-            uk = uu[:, k].clone()
-            uu[:, k] = uk / (uk.norm())
-
-        # undo swapping of rows and columns
-        uu = uu.T
-
-        # return from 2D
-        if is_3d:
-            uu = uu.view(shape_2d)
-
-        return torch.nn.Parameter(uu)
 
     def forward(self, x_querry, l, x_block, train=False, task_id=None):
         # 这里的 x_querry就是 patch_token
@@ -147,7 +89,7 @@ class CoPLPrompt(nn.Module):
             K = getattr(self, f'e_k_{l}')
             A = getattr(self, f'e_a_{l}')
             p = getattr(self, f'e_p_{l}')
-            W_a = getattr(self, f'e_w_{l}')
+            # W_a = getattr(self, f'e_w_{l}')
             pt = int(self.e_pool_size / (self.n_tasks))
             s = int(self.task_count * pt)
             f = int((self.task_count + 1) * pt)
@@ -170,7 +112,8 @@ class CoPLPrompt(nn.Module):
 
             # with attention and cosine sim
             # (b x 1 x d) * soft([1 x k x d]) = (b x k x d) -> attention = k x d
-            a_querry = torch.einsum('bd,kd->bkd', x_querry[:,0,:], A)#batch,768 , 10,768 ->batch,10,768
+            # a_querry = torch.einsum('bd,kd->bkd', x_querry[:,0,:], A)#batch,768 , 10,768 ->batch,10,768
+            a_querry = torch.einsum('bd,kd->bkd', x_querry, A)#batch,768 , 10,768 ->batch,10,768
             # # (b x k x d) - [1 x k x d] = (b x k) -> key = k x d
             n_K = nn.functional.normalize(K, dim=1)
             q = nn.functional.normalize(a_querry, dim=2)
@@ -178,7 +121,7 @@ class CoPLPrompt(nn.Module):
             # (b x 1 x k x 1) * [1 x plen x k x d] = (b x plen x d) -> prompt = plen x k x d
             P_ = torch.einsum('bk,kld->bld', aq_k, p)#batch,10  10,8,768  ->batch,8,768
 
-            P_ = self.align_patch_and_prompt( prompt_vectors=P_, patch_tokens=x_querry[:,1:,:],W_a=W_a)
+            # P_ = self.align_patch_and_prompt( prompt_vectors=P_, patch_tokens=x_querry[:,1:,:],W_a=W_a)
 
             # select prompts
             i = int(self.e_p_length / 2)
@@ -259,8 +202,71 @@ class CoPLPrompt(nn.Module):
         return context_vectors
 
 
+    # code for this function is modified from:
+    # https://github.com/legendongary/pytorch-gram-schmidt/blob/master/gram_schmidt.py
+    def gram_schmidt(self, vv):
+
+        def projection(u, v):
+            denominator = (u * u).sum()
+
+            if denominator < 1e-8:
+                return None
+            else:
+                return (v * u).sum() / denominator * u
+
+        # check if the tensor is 3D and flatten the last two dimensions if necessary
+        is_3d = len(vv.shape) == 3
+        if is_3d:
+            shape_2d = copy.deepcopy(vv.shape)
+            vv = vv.view(vv.shape[0], -1)
+
+        # swap rows and columns
+        vv = vv.T
+
+        # process matrix size
+        nk = vv.size(1)
+        uu = torch.zeros_like(vv, device=vv.device)
+
+        # get starting point
+        pt = int(self.e_pool_size / (self.n_tasks))
+        s = int(self.task_count * pt)
+        f = int((self.task_count + 1) * pt)
+        if s > 0:
+            uu[:, 0:s] = vv[:, 0:s].clone()
+        for k in range(s, f):
+            redo = True
+            while redo:
+                redo = False
+                vk = torch.randn_like(vv[:, k]).to(vv.device)
+                uk = 0
+                for j in range(0, k):
+                    if not redo:
+                        uj = uu[:, j].clone()
+                        proj = projection(uj, vk)
+                        if proj is None:
+                            redo = True
+                            print('restarting!!!')
+                        else:
+                            uk = uk + proj
+                if not redo: uu[:, k] = vk - uk
+        for k in range(s, f):
+            uk = uu[:, k].clone()
+            uu[:, k] = uk / (uk.norm())
+
+        # undo swapping of rows and columns
+        uu = uu.T
+
+        # return from 2D
+        if is_3d:
+            uu = uu.view(shape_2d)
+
+        return torch.nn.Parameter(uu)
+
 def ortho_penalty(t):
     return ((t @ t.T - torch.eye(t.shape[0]).cuda()) ** 2).mean()
+
+
+
 
 
 # note - ortho init has not been found to help l2p/dual prompt

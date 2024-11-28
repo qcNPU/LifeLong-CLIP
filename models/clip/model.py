@@ -246,13 +246,155 @@ class ResidualAttentionBlock_prefix(ResidualAttentionBlock):
 
         # 将 attention 模块替换成加入 prompt 的
         # self.attn = PreT_Attention(d_model, n_head)
-        self.attn = Attention_CODA(d_model, n_head)
+        self.attn = PromptedMultiheadAttention(d_model, n_head)
+
+    def attention(self, x: torch.Tensor,register_hook=False,prompt=None):
+        self.attn_mask = self.attn_mask.to(
+            dtype=x.dtype,
+            device=x.device) if self.attn_mask is not None else None
+        return self.attn(x, x, x, prompt = prompt,need_weights=False,
+                         attn_mask=self.attn_mask)[0]
+
 
     def forward(self, x: torch.Tensor, register_hook=False, prompt=None):
-        x = x + self.attn(x=self.ln_1(x), register_hook=register_hook,prompt=prompt)
-        # x = x + self.attention(self.ln_1(x))
+        x = x + self.attention(x=self.ln_1(x), register_hook=register_hook,prompt=prompt)
         x = x + self.mlp(self.ln_2(x))
         return x
+
+
+class PromptedMultiheadAttention(nn.MultiheadAttention):
+    def __init__(self, embed_dim, num_heads, dropout=0.0, bias=True, add_bias_kv=False, add_zero_attn=False, kdim=None, vdim=None):
+        super(PromptedMultiheadAttention, self).__init__(
+            embed_dim, num_heads, dropout, bias, add_bias_kv, add_zero_attn, kdim, vdim
+        )
+
+    def forward(self, query, key, value, prompt=None, key_padding_mask=None, need_weights=True, attn_mask=None):
+        """
+        增强的 MultiheadAttention 前向过程，支持 Prompt 拼接
+        - prompt: Tuple (pk, pv)，分别是 Prompt Key 和 Prompt Value
+        """
+        N, B, C = query.shape
+        # 1. 如果传入了 prompt，则与 key 和 value 拼接
+        if prompt is not None:
+            pk, pv = prompt  # 分别是 Prompt 的 Key 和 Value
+            # 拼接前需要确保 prompt 的维度匹配
+            pk = pk.permute(1, 0, 2) # prompt_length,batch,dim
+            pv = pv.permute(1, 0, 2)
+            key = torch.cat([pk, key], dim=0)  # 在 seq_len 维度上拼接 key
+            value = torch.cat([pv, value], dim=0)  # 在 seq_len 维度上拼接 value
+
+            # 注意：pk 和 pv 的形状必须为 (batch, num_prompt_tokens, embed_dim)
+
+        # 2. 调用原始的 MultiheadAttention 实现
+        attn_output, attn_weights = super().forward(
+            query, key, value, key_padding_mask=key_padding_mask, need_weights=need_weights, attn_mask=attn_mask
+        )
+
+        return attn_output, attn_weights
+
+
+class PreT_Attention(nn.Module):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = head_dim ** -0.5
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x, prompt):
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
+
+        if prompt is not None:
+            # prefix key, value
+            prompt = prompt.permute(1, 0, 3, 2, 4).contiguous()  # 2, B, num_heads, prompt_length, C // num_heads
+            key_prefix = prompt[0]  # B, num_heads, prompt_length, embed_dim // num_heads
+            value_prefix = prompt[1]  # B, num_heads, prompt_length, embed_dim // num_heads
+
+            expected_shape = (B, self.num_heads, C // self.num_heads)
+
+            assert (key_prefix.shape[0], key_prefix.shape[1], key_prefix.shape[
+                3]) == expected_shape, f'key_prefix.shape: {key_prefix.shape} not match k.shape: {k.shape}'
+            assert (value_prefix.shape[0], value_prefix.shape[1], value_prefix.shape[
+                3]) == expected_shape, f'value_prefix.shape: {value_prefix.shape} not match v.shape: {v.shape}'
+
+            k = torch.cat([key_prefix, k], dim=2)
+            v = torch.cat([value_prefix, v], dim=2)
+            # print(key_prefix.shape)
+        # print(q.shape, k.shape, v.shape)
+        # print(k.transpose(-2, -1).shape)
+
+        # exit()
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        # print("attn", attn.shape)
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        # print("x", x.shape)
+        # exit()
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class Attention_CODA(nn.Module):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
+        self.scale = qk_scale or head_dim ** -0.5
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+        self.attn_gradients = None
+        self.attention_map = None
+
+    def save_attn_gradients(self, attn_gradients):
+        self.attn_gradients = attn_gradients
+
+    def get_attn_gradients(self):
+        return self.attn_gradients
+
+    def save_attention_map(self, attention_map):
+        self.attention_map = attention_map
+
+    def get_attention_map(self):
+        return self.attention_map
+
+    def forward(self, x, register_hook=False, prompt=None):
+        B, N, C = x.shape # B是batch，N是patchNum +1，C就是特征维度，目前x是batch，197,768
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
+
+        if prompt is not None:
+            pk, pv = prompt
+            pk = pk.reshape(B, -1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+            pv = pv.reshape(B, -1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+            k = torch.cat((pk, k), dim=2)
+            v = torch.cat((pv, v), dim=2)
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        if register_hook:
+            self.save_attention_map(attn)
+            attn.register_hook(self.save_attn_gradients)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
 
 
 class ResidualAttentionBlock_LoRA(ResidualAttentionBlock):
@@ -544,110 +686,6 @@ class Transformer(nn.Module):
         return self.resblocks(x)
 
 
-
-class PreT_Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
-        super().__init__()
-        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x, prompt):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
-
-        if prompt is not None:
-            # prefix key, value
-            prompt = prompt.permute(1, 0, 3, 2, 4).contiguous()  # 2, B, num_heads, prompt_length, C // num_heads
-            key_prefix = prompt[0]  # B, num_heads, prompt_length, embed_dim // num_heads
-            value_prefix = prompt[1]  # B, num_heads, prompt_length, embed_dim // num_heads
-
-            expected_shape = (B, self.num_heads, C // self.num_heads)
-
-            assert (key_prefix.shape[0], key_prefix.shape[1], key_prefix.shape[
-                3]) == expected_shape, f'key_prefix.shape: {key_prefix.shape} not match k.shape: {k.shape}'
-            assert (value_prefix.shape[0], value_prefix.shape[1], value_prefix.shape[
-                3]) == expected_shape, f'value_prefix.shape: {value_prefix.shape} not match v.shape: {v.shape}'
-
-            k = torch.cat([key_prefix, k], dim=2)
-            v = torch.cat([value_prefix, v], dim=2)
-            # print(key_prefix.shape)
-        # print(q.shape, k.shape, v.shape)
-        # print(k.transpose(-2, -1).shape)
-
-        # exit()
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        # print("attn", attn.shape)
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        # print("x", x.shape)
-        # exit()
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-
-class Attention_CODA(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
-        super().__init__()
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
-        self.scale = qk_scale or head_dim ** -0.5
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-        self.attn_gradients = None
-        self.attention_map = None
-
-    def save_attn_gradients(self, attn_gradients):
-        self.attn_gradients = attn_gradients
-
-    def get_attn_gradients(self):
-        return self.attn_gradients
-
-    def save_attention_map(self, attention_map):
-        self.attention_map = attention_map
-
-    def get_attention_map(self):
-        return self.attention_map
-
-    def forward(self, x, register_hook=False, prompt=None):
-        B, N, C = x.shape # B是batch，N是patchNum +1，C就是特征维度，目前x是batch，197,768
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
-
-        if prompt is not None:
-            pk, pv = prompt
-            pk = pk.reshape(B, -1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-            pv = pv.reshape(B, -1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-            k = torch.cat((pk, k), dim=2)
-            v = torch.cat((pv, v), dim=2)
-
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        if register_hook:
-            self.save_attention_map(attn)
-            attn.register_hook(self.save_attn_gradients)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-
 class VisualTransformer(nn.Module):
 
     def __init__(self,
@@ -701,24 +739,23 @@ class VisualTransformer(nn.Module):
             dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.positional_embedding.to(x.dtype)  # input,output:(32,257,1024),position:(257,1024)
         x = self.ln_pre(x)
-
+        #
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD(batch,197,768)
-
         # for i, blk in enumerate(self.transformer.resblocks):
         #     x = blk(x)
 
 
-        x = self.ln_post(x)# batch,196,768)
+        x = self.ln_post(x[:,0,:])# batch,196,768)
         # x = self.ln_post(x[:, 0, :])# batch,768)
-
+        # q = x[:,0,:]
         # if self.proj is not None:
         #     x = x @ self.proj
 
-        return x  #就是下面的 q
+        return x,x  #就是下面的 q
 
-    def forward(self, x, prompt_module=None, register_blk=-1, q=None,patch_token=None, train=False, task_id=None):
+    def forward(self, x, prompt_module=None, register_blk=-1, q=None,patch_tokens=None, train=False, task_id=None):
         x = self.conv1(x)
         x = x.reshape(x.shape[0], x.shape[1], -1)
         x = x.permute(0, 2, 1)#batch,196,768
@@ -730,7 +767,7 @@ class VisualTransformer(nn.Module):
         x = x + self.positional_embedding.to(x.dtype)  # batch,197,768
 
         x = self.ln_pre(x)
-        # x = x.permute(1, 0, 2)  # NLD -> LND
+        x = x.permute(1, 0, 2)  # NLD -> LND
         prompt_loss = torch.zeros((1,), requires_grad=True).cuda()
         for i, blk in enumerate(self.transformer.resblocks):
 
@@ -745,7 +782,7 @@ class VisualTransformer(nn.Module):
 
             x = blk(x, register_blk == i, prompt=p_list)
 
-        # x = x.permute(1, 0, 2)  # LND -> NLD(batch,197,768)
+        x = x.permute(1, 0, 2)  # LND -> NLD(batch,197,768)
         x = self.ln_post(x[:, 0, :])
         if self.proj is not None:
             x = x @ self.proj
@@ -1018,11 +1055,11 @@ def build_model(state_dict: dict, design_details: dict):
         if key in state_dict:
             del state_dict[key]
 
-    state_dict = model.load_pretrain(state_dict)#让 attention 模块参数加载进来
+    # state_dict = model.load_pretrain(state_dict)#让 attention 模块参数加载进来
 
     # 这里没有convert_weights方法
-    state = model.load_state_dict(state_dict, strict=False)
-    # state = model.load_state_dict(state_dict)
+    # state = model.load_state_dict(state_dict, strict=False)
+    state = model.load_state_dict(state_dict)
     for p in model.parameters():
         p.data = p.data.float()
     return model.eval()

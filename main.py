@@ -35,6 +35,7 @@ methods = {
     "maple": MaPLe,
     "adapter-clip": AdapterCLIP,
     "adapter-clip-proto_prompt": Trainer_ProtoCLIP,
+    "template": Trainer_ProtoCLIP,
     "lora-clip": AdapterCLIP
 }
 

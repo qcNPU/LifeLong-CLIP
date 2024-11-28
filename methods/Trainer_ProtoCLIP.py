@@ -442,7 +442,7 @@ class Trainer_ProtoCLIP(_Trainer):
         return displacement
 
     def _stage2_compact_classifier(self, task_size, ca_epochs=5):
-        lr = 2e-2
+        lr = 5e-3
         self.logit_norm = None
         model = self.custom_clip.module if self.distributed else self.custom_clip
         isprompt = 'prompt' in self.model_type

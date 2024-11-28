@@ -25,7 +25,7 @@ def get_model(method, model_name, **kwargs):
                            device=kwargs['device'],
                            peft_method='adapter',
                            peft_encoder=kwargs['peft_encoder']), 224
-    elif method == "adapter-clip-proto_prompt":
+    elif method == "adapter-clip-proto_prompt" or method == "template":
         return CUSTOM_CLIP(kwargs['args'],kwargs['device']), 224
     elif method == "lora-clip":
         return AdapterCLIP(model_name=model_name,

@@ -77,10 +77,11 @@ class CUSTOM_CLIP(AdapterCLIP):
         self.image_encoder = clip_model.visual
         self.dtype = self.image_encoder.conv1.weight.dtype
         prompt_dim = 768
-        self.meta_net = MetaNet(prompt_dim, (prompt_dim // 16), prompt_dim)
+        # self.meta_net = MetaNet(prompt_dim, (prompt_dim // 16), prompt_dim)
         self.prompt_module = CoPLPrompt(768, 10, [100, 8, 0.0])
 
-    def forward(self, image, labels=None, test_class=None, train=True, image_is_feature=False):#image(batch,3,224,224)
+    def forward(self, image, labels=None, test_class=None, train=True,
+                image_is_feature=False):  # image(batch,3,224,224)
 
         # 1. vision feature入参分为图片和采样特征两种
         if image_is_feature:
@@ -89,12 +90,12 @@ class CUSTOM_CLIP(AdapterCLIP):
         else:
             # 1.获取 patch 经 image encoder 之后的 patch feature
             with torch.no_grad():
-                patch_features = self.image_encoder.get_patch_feature(image)#batch,196,768
-                q = patch_features[:,0,:]
+                patch_features, q = self.image_encoder.get_patch_feature(image)  # batch,196,768
             # 2.获取 patch conditional token
-            patch_tokens = self.meta_net(patch_features[:,1:,:])#batch,196,768
+            # patch_tokens = self.meta_net(patch_features[:,1:,:])#batch,196,768
             # 3.将 patch_token传入，与 prompt 做对齐和加权，再拼接到 attention 的 k v 上，得到最终 image feature
-            image_features = self.image_encoder(x=image, prompt_module=self.prompt_module, q=q,patch_tokens=patch_tokens, train=train,
+            image_features = self.image_encoder(x=image, prompt_module=self.prompt_module, q=q, patch_tokens=None,
+                                                train=train,
                                                 task_id=None)
             # 使用 .detach() 会返回一个新的张量，这个张量与原始张量共享数据，但不会参与梯度计算。调用 .item() 或 .numpy() 会从张量中提取数据，这些数据不再与计算图关联。
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
@@ -127,20 +128,27 @@ class CUSTOM_CLIP(AdapterCLIP):
                 logits = logit_scale * (image_features @ text_features.T)  # logits_per_image
             return logits, image_features, text_features, selected_key
         else:
-            probability = image_features @ self.text_key.t()
-            _, indices = probability.topk(k=min(self.args.topK, probability.shape[1]), dim=1, largest=True)
-            selected_prompt = self.text_prompt[indices].view(batch, self.n_ctx * self.args.topK, self.feature_dim)
+            if 'prompt' in self.args.model_type:  # image encoder中有adapter，text端输入为text prompt
+                probability = image_features @ self.text_key.t()
+                _, indices = probability.topk(k=min(self.args.topK, probability.shape[1]), dim=1, largest=True)
+                selected_prompt = self.text_prompt[indices].view(batch, self.n_ctx * self.args.topK, self.feature_dim)
 
-            text_prompt, tokenized_prompts, _, _ = self.prompt_learner(selected_prompt, train)
-            text_features = self.text_encoder(text=text_prompt, tokenized_prompts=tokenized_prompts)
-            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                text_prompt, tokenized_prompts, _, _ = self.prompt_learner(selected_prompt, train)
+                text_features = self.text_encoder(text=text_prompt, tokenized_prompts=tokenized_prompts)
+                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
-            logit_scale = self.logit_scale.exp()
-            image_features = image_features.unsqueeze(1)
-            text_features = text_features.view(image_features.shape[0], self.n_class, -1)
-            logits = logit_scale * (image_features * text_features).sum(-1)
+                logit_scale = self.logit_scale.exp()
+                image_features = image_features.unsqueeze(1)
+                text_features = text_features.view(image_features.shape[0], self.n_class, -1)
+                logits = logit_scale * (image_features * text_features).sum(-1)
+            else:
+                with torch.no_grad():
+                    text_token = self.labels_tokenize([self.args.text_template.format(c) for c in self.train_cls_name])
+                    text_features = self.text_encoder(text=text_token, need_token=True)
+                    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                logit_scale = self.logit_scale.exp()
+                logits = logit_scale * (image_features @ text_features.T)  # logits_per_image
             return logits
-
     def update_class_names(self, new_class_names):
         _num = 0
         for c in new_class_names:
@@ -155,7 +163,7 @@ class CUSTOM_CLIP(AdapterCLIP):
     def set_prompt_token_by_clsname(self, classnames):
         del self.prompt_learner.tokenized_prompts, self.prompt_learner.token_prefix, self.prompt_learner.token_suffix
         self.n_class = len(classnames)
-        # self.classnames = classnames
+        self.train_cls_name = classnames
         # self.name_lens = [len(_tokenizer.encode(name)) for name in self.classnames]
         # self.prompt_learner.name_lens = self.name_lens
 
