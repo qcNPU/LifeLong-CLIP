@@ -5,10 +5,12 @@ def base_parser():
     parser = argparse.ArgumentParser(description="Class Incremental Learning Research")
 
     # Method and Exp. Settings.
-    parser.add_argument("--method", type=str, default="template", choices=["template","adapter-clip","adapter-clip-proto_prompt",], help="Select CIL method",)
-    parser.add_argument("--model_type",type=str,default="template",choices=["template","tune_prototype_prompt"],help="The number of workers")
+    parser.add_argument("--method", type=str, default="adapter-clip-proto_prompt", choices=["template","adapter-clip","adapter-clip-proto_prompt",], help="Select CIL method",)
+    parser.add_argument("--model_type",type=str,default="adapter-clip-proto_prompt",choices=["template","tune_prototype_prompt"],help="The number of workers")
     parser.add_argument("--dataset", type=str, default="cifar100", help="[mnist, cifar10, cifar100, imagenet]",)
     parser.add_argument("--n_tasks", type=int, default=10, help="The number of tasks")
+    parser.add_argument("--opt_name", type=str, default="adamw", choices=["adam","adamw","radam","sgd"], help="Optimizer name")
+    parser.add_argument("--sched_name", type=str, default="codacosine", choices=["anneal","cos","multistep","multistep","default","coslr"], help="Scheduler name")
     parser.add_argument("--epochNum", type=int, default=6, help="The number of tasks")
     parser.add_argument('--peft_encoder', type=str, default='image', choices=['none','both', 'text', 'image'], help='The encoder to inject LoRa/Adapter/Prompt')
     parser.add_argument("--lr", type=float, default=2e-3, help="learning rate")
@@ -35,8 +37,6 @@ def base_parser():
     # Model
 
     # Train
-    parser.add_argument("--opt_name", type=str, default="adamw", choices=["adam","adamw","radam","sgd"], help="Optimizer name")
-    parser.add_argument("--sched_name", type=str, default="default", choices=["anneal","cos","multistep","multistep","default","coslr"], help="Scheduler name")
 
     parser.add_argument("--n_worker", type=int, default=0, help="The number of workers")
 

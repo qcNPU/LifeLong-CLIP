@@ -97,14 +97,9 @@ class Trainer_ProtoCLIP(_Trainer):
         else:
             self.custom_clip.update_class_names(self.exposed_classes_names)
 
-        # train with augmented batches
-        _loss, _acc, _iter = 0.0, 0.0, 0
-        for _ in range(int(self.online_iter)):
-            loss, acc = self.online_train([images.clone(), labels.clone()])
-            _loss += loss
-            _acc += acc
-            _iter += 1
-        return _loss / _iter, _acc / _iter
+        loss, acc = self.online_train([images.clone(), labels.clone()])
+
+        return loss,acc
 
     def online_train(self, data):
         self.custom_clip.train()
@@ -159,7 +154,7 @@ class Trainer_ProtoCLIP(_Trainer):
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            self.update_schedule()
+
         else:
             logit, image_features, text_features,selected_key = self.custom_clip(image=x)
             loss_ce = self.criterion(logit, y)

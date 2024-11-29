@@ -3,6 +3,7 @@ import torch_optimizer
 from torch.nn import Module
 from torch import optim
 from torch.optim import lr_scheduler
+from .schedulers import CosineSchedule
 
 
 def cycle(iterable):
@@ -50,7 +51,9 @@ def select_scheduler(sched_name: str,
     elif sched_name == "const":
         scheduler = optim.lr_scheduler.LambdaLR(opt, lambda iter: 1)
     elif sched_name == "coslr":
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=opt, T_max=epoch_num)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=opt, T_max=epoch_num,eta_min=1e-6)
+    elif sched_name == "codacosine":
+        scheduler = CosineSchedule(opt, K=epoch_num)
     else:
         scheduler = optim.lr_scheduler.LambdaLR(opt, lambda iter: 1)
     return scheduler

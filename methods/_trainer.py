@@ -337,6 +337,8 @@ class _Trainer():
                 total_loss = 0.0
                 total_acc = 0.0
                 samples_cnt = 0
+                if epoch>0:
+                    self.update_schedule()
                 for i, (images, labels, idx) in enumerate(self.train_dataloader):#根据gpu数量做了拆分
                     if self.debug and (i + 1) * self.temp_batchsize >= 500:
                         break
@@ -344,6 +346,7 @@ class _Trainer():
                     loss, acc = self.online_step(images, labels, idx)
                     total_loss += loss
                     total_acc += acc
+
                 self.report_training(epoch,samples_cnt, total_loss/data_len, total_acc*100/data_len)
             self.online_after_task(task_id)
 
@@ -645,3 +648,6 @@ class _Trainer():
         logging.info("<<Convert to str>>")
         convert_data_info = self.convert_class_label(data_info)
         logging.info(convert_data_info)
+
+    def update_schedule(self):
+        pass
