@@ -257,7 +257,7 @@ class ResidualAttentionBlock_prefix(ResidualAttentionBlock):
 
 
     def forward(self, x: torch.Tensor, register_hook=False, prompt=None):
-        x = x + self.attention(x=self.ln_1(x), register_hook=register_hook,prompt=prompt)
+        x = x + self.attention(self.ln_1(x), register_hook,prompt)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -268,7 +268,7 @@ class PromptedMultiheadAttention(nn.MultiheadAttention):
             embed_dim, num_heads, dropout, bias, add_bias_kv, add_zero_attn, kdim, vdim
         )
 
-    def forward(self, query, key, value, prompt=None, key_padding_mask=None, need_weights=True, attn_mask=None):
+    def forward(self, query, key, value, prompt=None, key_padding_mask=None, need_weights=False, attn_mask=None):
         """
         增强的 MultiheadAttention 前向过程，支持 Prompt 拼接
         - prompt: Tuple (pk, pv)，分别是 Prompt Key 和 Prompt Value
@@ -743,9 +743,6 @@ class VisualTransformer(nn.Module):
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD(batch,197,768)
-        # for i, blk in enumerate(self.transformer.resblocks):
-        #     x = blk(x)
-
 
         x = self.ln_post(x[:,0,:])# batch,196,768)
         # x = self.ln_post(x[:, 0, :])# batch,768)

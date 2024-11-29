@@ -32,6 +32,7 @@ class MetaNet(nn.Module):
 
 class CUSTOM_CLIP(AdapterCLIP):
     def __init__(self, args, device):
+        self.train_cls_name = None
         self.classnames = None
         self.name_lens = None
         self.n_class = None
@@ -78,7 +79,7 @@ class CUSTOM_CLIP(AdapterCLIP):
         self.dtype = self.image_encoder.conv1.weight.dtype
         prompt_dim = 768
         # self.meta_net = MetaNet(prompt_dim, (prompt_dim // 16), prompt_dim)
-        self.prompt_module = CoPLPrompt(768, 10, [100, 8, 0.0])
+        self.prompt_module = CoPLPrompt(768, 10, [100, 8, 0])
 
     def forward(self, image, labels=None, test_class=None, train=True,
                 image_is_feature=False):  # image(batch,3,224,224)
@@ -100,6 +101,8 @@ class CUSTOM_CLIP(AdapterCLIP):
             # 使用 .detach() 会返回一个新的张量，这个张量与原始张量共享数据，但不会参与梯度计算。调用 .item() 或 .numpy() 会从张量中提取数据，这些数据不再与计算图关联。
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         batch = image_features.shape[0]
+        selected_key = torch.zeros(1).cuda()
+        selected_key.requires_grad = True
         if train:
             if 'prompt' in self.args.model_type:  # image encoder中有adapter，text端输入为text prompt
                 # 2. soft prompt 拼装
@@ -121,7 +124,7 @@ class CUSTOM_CLIP(AdapterCLIP):
                 logits = logit_scale * (image_features * text_features).sum(-1)
             else:
                 with torch.no_grad():
-                    text_token = self.labels_tokenize([self.args.text_template.format(c) for c in self.train_cls_name])
+                    text_token = self.tokenize([self.args.text_template.format(c) for c in self.train_cls_name]).cuda()
                     text_features = self.text_encoder(text=text_token, need_token=True)
                     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
                 logit_scale = self.logit_scale.exp()
@@ -143,7 +146,7 @@ class CUSTOM_CLIP(AdapterCLIP):
                 logits = logit_scale * (image_features * text_features).sum(-1)
             else:
                 with torch.no_grad():
-                    text_token = self.labels_tokenize([self.args.text_template.format(c) for c in self.train_cls_name])
+                    text_token = self.tokenize([self.args.text_template.format(c) for c in self.train_cls_name]).cuda()
                     text_features = self.text_encoder(text=text_token, need_token=True)
                     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
                 logit_scale = self.logit_scale.exp()
@@ -161,21 +164,25 @@ class CUSTOM_CLIP(AdapterCLIP):
         return self.text_tokens
 
     def set_prompt_token_by_clsname(self, classnames):
-        del self.prompt_learner.tokenized_prompts, self.prompt_learner.token_prefix, self.prompt_learner.token_suffix
         self.n_class = len(classnames)
         self.train_cls_name = classnames
-        # self.name_lens = [len(_tokenizer.encode(name)) for name in self.classnames]
-        # self.prompt_learner.name_lens = self.name_lens
+        if 'prompt' in self.args.model_type:
+            del self.prompt_learner.tokenized_prompts, self.prompt_learner.token_prefix, self.prompt_learner.token_suffix
 
-        prompts = [self.prompt_learner.prompt_prefix + ' ' + name + '.' for name in classnames]
-        tokenized_prompts = self.tokenize(prompts).cuda()
-        with torch.no_grad():
-            embedding = self.token_embedding(tokenized_prompts).type(self.dtype)
-        self.prompt_learner.register_buffer('tokenized_prompts', tokenized_prompts)  # SOS, [n_cls, 1, ctx_dim]
-        self.prompt_learner.register_buffer('token_prefix', embedding[:, :1, :])  # SOS, [n_cls, 1, ctx_dim]
-        self.prompt_learner.register_buffer('token_suffix', embedding[:, 1 + (self.n_ctx * self.args.topK):,
-                                                            :])  # CLS, EOS, [n_cls, -1, ctx_dim]
-        self.prompt_learner.n_cls = len(classnames)
+            # self.name_lens = [len(_tokenizer.encode(name)) for name in self.classnames]
+            # self.prompt_learner.name_lens = self.name_lens
+
+            prompts = [self.prompt_learner.prompt_prefix + ' ' + name + '.' for name in classnames]
+            tokenized_prompts = self.tokenize(prompts).cuda()
+            with torch.no_grad():
+                embedding = self.token_embedding(tokenized_prompts).type(self.dtype)
+            self.prompt_learner.register_buffer('tokenized_prompts', tokenized_prompts)  # SOS, [n_cls, 1, ctx_dim]
+            self.prompt_learner.register_buffer('token_prefix', embedding[:, :1, :])  # SOS, [n_cls, 1, ctx_dim]
+            self.prompt_learner.register_buffer('token_suffix', embedding[:, 1 + (self.n_ctx * self.args.topK):,
+                                                                :])  # CLS, EOS, [n_cls, -1, ctx_dim]
+            self.prompt_learner.n_cls = len(classnames)
+
+
 
     def extract_vector(self, image):
         image_features = self.image_encoder(image.type(self.dtype))  # image:(32,3,32,32)

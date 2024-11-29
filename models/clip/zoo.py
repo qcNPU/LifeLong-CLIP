@@ -50,7 +50,7 @@ class CoPLPrompt(nn.Module):
         # prompt basic param
         self.e_pool_size = int(prompt_param[0])
         self.e_p_length = int(prompt_param[1])
-        self.e_layers = [0, 1, 2, 3, 4,5,6]
+        self.e_layers = [0, 1, 2, 3, 4]
 
         # strenth of ortho penalty
         self.ortho_mu = prompt_param[2]

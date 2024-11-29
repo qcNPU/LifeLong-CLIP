@@ -154,7 +154,8 @@ class Trainer_ProtoCLIP(_Trainer):
             loss = loss_ce #+ loss_key
         _, preds = logit.topk(self.topk, 1, True, True)
 
-        self.optimizer.zero_grad()
+
+        # self.optimizer.zero_grad()
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
         self.scaler.update()
@@ -193,7 +194,7 @@ class Trainer_ProtoCLIP(_Trainer):
             self.custom_clip.set_prompt_token_by_clsname(self.all_classnames[:self._total_classes])
 
         # 目前 class Prototype和二阶段微调都是为 prompt 而存在的，没有 prompt 就不需要了
-        if "prompt" in self.method:
+        if "prompt" in self.model_type:
             self.stage1_and_stage2()
 
     def online_evaluate(self, test_loader, samples_cnt):
