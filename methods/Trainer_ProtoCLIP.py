@@ -163,7 +163,6 @@ class Trainer_ProtoCLIP(_Trainer):
             _, preds = logit.topk(self.topk, 1, True, True)
             loss.backward()
             self.optimizer.step()
-            self.update_schedule()
 
 
         # if self.args.get('grad_analysis', False):
