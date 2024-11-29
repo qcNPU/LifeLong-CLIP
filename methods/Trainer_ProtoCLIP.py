@@ -147,19 +147,29 @@ class Trainer_ProtoCLIP(_Trainer):
             self.custom_clip.set_prompt_token_by_clsname(classnames=train_class_name_list)
 
         self.optimizer.zero_grad()
-        with torch.cuda.amp.autocast(enabled=self.use_amp):
+        if 'prompt' in self.model_type:
+            with torch.cuda.amp.autocast(enabled=self.use_amp):
+                logit, image_features, text_features, selected_key = self.custom_clip(image=x)
+                loss_ce = self.criterion(logit, y)
+                # loss_key = self.cosine_loss(image_features,selected_key)
+                loss = loss_ce  # + loss_key
+            _, preds = logit.topk(self.topk, 1, True, True)
+
+            # self.optimizer.zero_grad()
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.update_schedule()
+        else:
             logit, image_features, text_features,selected_key = self.custom_clip(image=x)
             loss_ce = self.criterion(logit, y)
             # loss_key = self.cosine_loss(image_features,selected_key)
             loss = loss_ce #+ loss_key
-        _, preds = logit.topk(self.topk, 1, True, True)
+            _, preds = logit.topk(self.topk, 1, True, True)
+            loss.backward()
+            self.optimizer.step()
+            self.update_schedule()
 
-
-        # self.optimizer.zero_grad()
-        self.scaler.scale(loss).backward()
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-        self.update_schedule()
 
         # if self.args.get('grad_analysis', False):
         #     self._grad_analysis(image_features.clone().detach(),

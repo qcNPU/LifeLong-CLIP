@@ -32,13 +32,13 @@ def select_optimizer(opt_name: str, lr: float,
 
 def select_scheduler(sched_name: str,
                      opt: optim.Optimizer,
-                     hparam=None) -> lr_scheduler._LRScheduler:
+                     hparam=None,epoch_num = 6) -> lr_scheduler._LRScheduler:
     if "exp" in sched_name:
         scheduler = optim.lr_scheduler.ExponentialLR(opt, gamma=hparam)
     elif sched_name == "cos":
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(opt,
-                                                                   T_0=1,
-                                                                   T_mult=2)
+                                                                   T_0=epoch_num,
+                                                                   T_mult=1)
     elif sched_name == "anneal":
         scheduler = optim.lr_scheduler.ExponentialLR(opt,
                                                      1 / 1.1,
@@ -49,6 +49,8 @@ def select_scheduler(sched_name: str,
                                                    gamma=0.1)
     elif sched_name == "const":
         scheduler = optim.lr_scheduler.LambdaLR(opt, lambda iter: 1)
+    elif sched_name == "coslr":
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=opt, T_max=epoch_num)
     else:
         scheduler = optim.lr_scheduler.LambdaLR(opt, lambda iter: 1)
     return scheduler

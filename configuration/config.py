@@ -6,6 +6,7 @@ def base_parser():
 
     # Method and Exp. Settings.
     parser.add_argument("--method", type=str, default="template", choices=["template","adapter-clip","adapter-clip-proto_prompt",], help="Select CIL method",)
+    parser.add_argument("--model_type",type=str,default="template",choices=["template","tune_prototype_prompt"],help="The number of workers")
     parser.add_argument("--dataset", type=str, default="cifar100", help="[mnist, cifar10, cifar100, imagenet]",)
     parser.add_argument("--n_tasks", type=int, default=10, help="The number of tasks")
     parser.add_argument("--epochNum", type=int, default=6, help="The number of tasks")
@@ -23,7 +24,6 @@ def base_parser():
     parser.add_argument("--num_prompt",type=int,default=10,help="The number of workers")
     parser.add_argument("--n_ctx",type=int,default=12,help="The number of workers")
     parser.add_argument("--topK",type=int,default=2,help="The number of chosen prompt")
-    parser.add_argument("--model_type",type=str,default="tune_prototype_prompt",choices=[],help="The number of workers")
     parser.add_argument("--text_template",type=str,default="a bad photo of a {}.",choices=[],help="The number of workers")
     parser.add_argument("--n", type=int, default=100, help="The percentage of disjoint split. Disjoint=100, Blurry=0")
     parser.add_argument("--m", type=int, default=0, help="The percentage of blurry samples in blurry split. Uniform split=100, Disjoint=0")
@@ -36,7 +36,7 @@ def base_parser():
 
     # Train
     parser.add_argument("--opt_name", type=str, default="adamw", choices=["adam","adamw","radam","sgd"], help="Optimizer name")
-    parser.add_argument("--sched_name", type=str, default="default", choices=["anneal","cos","multistep","multistep","default"], help="Scheduler name")
+    parser.add_argument("--sched_name", type=str, default="default", choices=["anneal","cos","multistep","multistep","default","coslr"], help="Scheduler name")
 
     parser.add_argument("--n_worker", type=int, default=0, help="The number of workers")
 
